@@ -15,7 +15,10 @@ import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
@@ -24,6 +27,8 @@ import androidx.work.Worker
 import androidx.work.WorkerParameters
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
@@ -43,6 +48,26 @@ internal object UpdateSource {
                     parts.last().endsWith(".apk")
             }
     }.getOrDefault(false)
+}
+
+/** Regras puras do download (testadas): o que é falha de rede passageira e quando avisar. */
+internal object UpdateRetry {
+    const val ATTEMPTS = 5
+    /** Avisa só depois de várias rodadas seguidas sem conseguir (cada rodada já tenta 5 vezes). */
+    const val NOTIFY_AFTER = 6
+    fun isTransient(error: Throwable?): Boolean {
+        var e = error
+        while (e != null) { if (e is IOException) return true; e = e.cause }
+        return false
+    }
+    fun shouldNotify(error: Throwable, failuresInARow: Int) = !isTransient(error) || failuresInARow >= NOTIFY_AFTER
+    /** Resposta a um pedido com Range: true = continuar o arquivo, false = recomeçar, null = já estava completo. */
+    fun appendFor(code: Int, asked: Boolean): Boolean? = when {
+        code == 206 && asked -> true
+        code == 200 -> false
+        code == 416 && asked -> null
+        else -> throw IOException("HTTP $code")
+    }
 }
 
 object Updater {
@@ -114,7 +139,7 @@ object Updater {
                     }
                     val release = latest() ?: return@synchronized
                     if (!UpdateVersion.isNewer(release.tag, BuildConfig.VERSION_CODE)) return@synchronized
-                    if (canInstall(context)) downloadAndInstall(context, release)
+                    if (canInstall(context)) downloadNow(context)
                     else if (force) {
                         download(context, release)
                         prefs.edit().putBoolean("installPending", true).apply()
@@ -126,35 +151,52 @@ object Updater {
                         }
                     } else notifyAvailable(context, release)
                 }
-            }.onFailure {
-                Log.w("LimpaFotos", "Falha ao atualizar", it)
-                reportError(context, it.message ?: "Não consegui atualizar")
-            }
+            }.onFailure { failed(context, it) }
         }
     }
 
     private fun apkFile(context: Context) = File(File(context.cacheDir, "update"), "limpa-fotos.apk")
     private fun canInstall(context: Context) = Build.VERSION.SDK_INT < 26 || context.packageManager.canRequestPackageInstalls()
 
+    /** Baixa com retomada: se a conexão cai, continua de onde parou (até 5 tentativas nesta rodada). */
     private fun download(context: Context, release: Release) {
         check(UpdateSource.isTrustedApkUrl(release.apkUrl)) { "URL do APK não permitida" }
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val file = apkFile(context)
         file.parentFile?.mkdirs()
         val tmp = File(file.parentFile, "baixando.apk")
-        val c = URL(release.apkUrl).openConnection() as HttpURLConnection
+        if (prefs.getString("partialTag", null) != release.tag) {
+            tmp.delete()
+            prefs.edit().putString("partialTag", release.tag).apply()
+        }
+        var attempt = 0
+        while (true) {
+            try { fetchInto(release.apkUrl, tmp); break }
+            catch (e: IOException) {
+                if (++attempt >= UpdateRetry.ATTEMPTS) throw e
+                Thread.sleep(attempt * 3_000L)
+            }
+        }
+        if (tmp.length() <= 100_000) { tmp.delete(); error("APK pequeno demais") }
+        file.delete()
+        check(tmp.renameTo(file)) { "Não consegui salvar o APK" }
+        prefs.edit().putString("stagedTag", release.tag).remove("partialTag").apply()
+    }
+
+    private fun fetchInto(url: String, tmp: File) {
+        val have = if (tmp.isFile) tmp.length() else 0L
+        val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 15_000
-        c.readTimeout = 60_000
+        c.readTimeout = 30_000
+        if (have > 0) c.setRequestProperty("Range", "bytes=$have-")
         try {
-            check(c.responseCode == 200) { "HTTP ${c.responseCode}" }
+            val append = UpdateRetry.appendFor(c.responseCode, have > 0) ?: return
             check(c.url.protocol == "https") { "Download sem HTTPS" }
-            c.inputStream.use { input -> tmp.outputStream().use { input.copyTo(it) } }
-            check(tmp.length() > 100_000) { "APK pequeno demais" }
-            file.delete()
-            check(tmp.renameTo(file)) { "Não consegui salvar o APK" }
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("stagedTag", release.tag).apply()
+            val expected = c.contentLengthLong.let { if (it > 0) it + (if (append) have else 0) else -1 }
+            c.inputStream.use { input -> FileOutputStream(tmp, append).use { input.copyTo(it, 64 * 1024) } }
+            if (expected > 0 && tmp.length() != expected) throw IOException("Download incompleto")
         } finally {
             c.disconnect()
-            tmp.delete()
         }
     }
 
@@ -166,7 +208,8 @@ object Updater {
     @Suppress("DEPRECATION")
     private fun install(context: Context, tag: String) {
         val file = apkFile(context)
-        val archive = context.packageManager.getPackageArchiveInfo(file.absolutePath, 0) ?: error("APK inválido")
+        val archive = context.packageManager.getPackageArchiveInfo(file.absolutePath, 0)
+            ?: run { file.delete(); error("APK inválido; baixo de novo na próxima vez") }
         check(archive.packageName == context.packageName) { "APK não pertence ao Limpa Fotos" }
         val code = if (Build.VERSION.SDK_INT >= 28) archive.longVersionCode else archive.versionCode.toLong()
         check(code == UpdateVersion.codeFromTag(tag)?.toLong() && code > BuildConfig.VERSION_CODE) { "Versão do APK inválida" }
@@ -216,10 +259,32 @@ object Updater {
             val release = latest() ?: return@synchronized
             if (!UpdateVersion.isNewer(release.tag, BuildConfig.VERSION_CODE)) return@synchronized
             if (canInstall(context)) downloadAndInstall(context, release) else notifyAvailable(context, release)
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt("failures", 0).apply()
         } catch (e: Exception) {
-            reportError(context, e.message ?: "Não consegui atualizar")
+            failed(context, e)
             throw e
         }
+    }
+
+    /** Baixa e instala pelo WorkManager: segue mesmo se o app sair da tela e espera a rede voltar. */
+    fun downloadNow(context: Context) {
+        val request = OneTimeWorkRequestBuilder<UpdateWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.MINUTES)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork("update-now", ExistingWorkPolicy.KEEP, request)
+    }
+
+    /** Queda de rede não vira notificação: tenta de novo sozinho; só avisa se falhar muitas vezes seguidas. */
+    private fun failed(context: Context, error: Throwable) {
+        Log.w("LimpaFotos", "Falha ao atualizar", error)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val failures = prefs.getInt("failures", 0) + 1
+        prefs.edit().putInt("failures", failures).apply()
+        if (UpdateRetry.isTransient(error)) downloadNow(context)
+        if (UpdateRetry.shouldNotify(error, failures)) reportError(context,
+            if (UpdateRetry.isTransient(error)) "Sem conseguir baixar a atualização (internet instável). Sigo tentando sozinho."
+            else error.message ?: "Não consegui atualizar")
     }
 
     private fun notifyAvailable(context: Context, release: Release) {
@@ -265,7 +330,7 @@ object Updater {
     private fun reportSuccess(context: Context, tag: String) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .remove("sessionId").remove("sessionTag").remove("stagedTag").remove("notified").remove("confirmation")
-            .putBoolean("installPending", false).commit()
+            .putBoolean("installPending", false).putInt("failures", 0).commit()
         apkFile(context).delete()
         notify(context, "Limpa Fotos atualizado para ${tag.removePrefix("v")}", "Toque para abrir o app.", openApp(context))
     }
