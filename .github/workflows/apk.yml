@@ -61,7 +61,8 @@ jobs:
       - name: Publicar latest
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.3.${{ github.run_number }}
+          # Tag fica v0.1.N: os apps já instalados (até 0.3.10) só reconhecem esse formato. O nome visível é 0.3.N.
+          tag_name: v0.1.${{ github.run_number }}
           name: Limpa Fotos 0.3.${{ github.run_number }}
           make_latest: true
           target_commitish: ${{ github.sha }}

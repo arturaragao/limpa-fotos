@@ -11,6 +11,13 @@ class UpdateVersionTest {
             assertNull(tag, UpdateVersion.codeFromTag(tag))
         }
     }
+    // Bug 24/10/2026: as tags passaram a v0.3.N e o app (que só lia v0.1.N) parou de se atualizar.
+    @Test fun readsTagsAfterTheNameChanged() {
+        assertEquals(10, UpdateVersion.codeFromTag("v0.3.10"))
+        assertEquals(4, UpdateVersion.codeFromTag("v0.2.4"))
+        assertTrue(UpdateVersion.isNewer("v0.3.10", 8))
+        assertTrue(UpdateVersion.isNewer("v0.1.11", 10))
+    }
     @Test fun onlyUpdatesForHigherVersionCode() {
         assertTrue(UpdateVersion.isNewer("v0.1.8", 7))
         assertFalse(UpdateVersion.isNewer("v0.1.7", 7))
