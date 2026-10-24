@@ -243,7 +243,7 @@ object Updater {
         if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
         val manager = context.getSystemService(NotificationManager::class.java)
         if (!manager.areNotificationsEnabled()) return false
-        Notifications.createChannel(context)
+        manager.createNotificationChannel(android.app.NotificationChannel("avisos", "Atualizações", NotificationManager.IMPORTANCE_DEFAULT))
         manager.notify(NOTIF_ID, Notification.Builder(context, "avisos")
             .setSmallIcon(R.drawable.ic_logo).setContentTitle(title).setContentText(text)
             .setContentIntent(pending).setAutoCancel(true).build())
