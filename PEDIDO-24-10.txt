@@ -1,0 +1,16 @@
+Projeto: C:\Users\artur.aragao\Documents\limpa-fotos (app Android Kotlin). Leia CLAUDE.md primeiro e siga os "Pedidos do Artur" de lá (sem commit/push, UTF-8 sem BOM, sem fotos na rede).
+Arquivos principais: PhotoRules.kt, PhotoScanner.kt, CleanViewModel.kt, MainActivity.kt, PhotoAdapter.kt, PhotoActivity.kt, testes em app/src/test.
+
+Pedidos novos do Artur (todos):
+1. Foto que já apareceu e ele DESMARCOU (quis manter) nunca mais aparece. Guarde os ids mantidos de forma persistente (filesDir, junto do cache) e filtre em todas as categorias. Coloque em Configurações um botão "Mostrar de novo as que mantive" (zera a lista).
+2. "Analisar mais" analisa só fotos ainda NÃO analisadas (o lote seguinte pula as que já estão no cache). Confira que hoje isso é verdade e corrija se não for.
+3. Ao tocar numa foto para decidir, abre em TELA CHEIA (sem barras, imagem grande, zoom com pinça se der com o que já existe), deslizar para a próxima/anterior da mesma categoria, e um botão para marcar/desmarcar ali mesmo.
+4. Está pegando fotos demais. Só coisas inúteis de fato: prints (capturas de tela), documentos/papel fotografado, figurinhas (WebP/stickers do WhatsApp), lixo do WhatsApp (memes, imagens encaminhadas da pasta WhatsApp Images sem pessoas), fotos borradas. Endureça os limiares (borrada só se muito borrada).
+5. Qualquer foto com pessoa (selfie, ele com outras pessoas, rosto) NÃO entra e nem aparece no app. Use ML Kit face detection embarcado (com.google.mlkit:face-detection, versão estável atual, modelo no APK, offline) — esta dependência está autorizada. Rosto detectado = excluída. Também exclua rótulos do image labeling ligados a pessoa (Selfie, Person etc.) como reforço.
+6. Remover a categoria comida (por ora). Repetidas: mantenha só se não tiverem pessoas.
+7. GOOGLE FOTOS (o mais importante): apagar só do celular não adianta, a cópia fica na nuvem. A API do Google não permite apagar, então: novo fluxo "Apagar no Google Fotos" para as selecionadas: abre a foto N no app Google Fotos (Intent ACTION_VIEW com a content uri, setPackage("com.google.android.apps.photos"), FLAG_GRANT_READ_URI_PERMISSION); o Artur toca na lixeira lá (isso apaga do celular e da nuvem); ao voltar ao app (onResume), confere se a uri ainda existe no MediaStore: sumiu = conta como apagada e abre a próxima automaticamente; ainda existe = mostra "Pular / Tentar de novo". Barra de progresso "N de M". Se o Google Fotos não estiver instalado, cai no fluxo atual (createTrashRequest). Deixe o fluxo atual (lixeira só do celular) como opção secundária.
+8. Lógica pura nova (filtro de mantidas, seleção de próximo lote, regras de exclusão por rosto/rótulo, progresso do fluxo Google Fotos) em PhotoRules.kt com testes JUnit em app/src/test.
+9. Suba versionName/versionCode em app/build.gradle.kts seguindo o padrão atual (0.1.N). Atualize CLAUDE.md (Arquitetura, Estado atual, Histórico 24/10/2026).
+
+NÃO: commit/push, apagar fotos sem confirmação do Android, mandar fotos para a rede, bibliotecas de UI/imagem novas além do face-detection, mexer em outros repos.
+Conferir: o build é no CI (sem SDK local); revise que compila de cabeça (imports, tipos). No fim liste arquivos mudados e riscos em até 20 linhas.

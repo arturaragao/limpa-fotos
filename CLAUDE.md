@@ -111,3 +111,7 @@ eventuais mudanças nos hosts de download do GitHub.
 - 24/10/2026: app criado do zero, adaptando build, wrapper, assinatura, workflow,
   atualizador e FileProvider dos arquivos indicados no projeto de referência.
   Nenhum commit ou push realizado.
+
+## Próximo passo (24/10/2026, PC do trabalho desligado no meio)
+Ramo `wip-google-fotos`: trabalho do Codex forte interrompido, NÃO revisado. Pedido completo em `PEDIDO-24-10.txt`.
+Falta: conferir no diff o que dos 9 itens do pedido foi feito, completar o resto, testes, juntar no `main` (dispara o APK) e testar no celular o fluxo "Apagar no Google Fotos".
