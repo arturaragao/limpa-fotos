@@ -21,7 +21,9 @@ data class PhotoMeta(
     val addedAt: Long = 0
 )
 
-data class Analysis(val hash: Long, val sharpness: Double, val food: Boolean)
+/** cat = gato (Koda) na foto; plated = comida servida em prato/mesa (foto caprichada). */
+data class Analysis(val hash: Long, val sharpness: Double, val food: Boolean,
+    val cat: Boolean = false, val plated: Boolean = false)
 
 data class Photo(
     val meta: PhotoMeta,
@@ -54,6 +56,16 @@ object PhotoRules {
             path.contains("whatsapp stickers") || path.contains("animated gifs") ||
             (meta.width in 1..511 || meta.height in 1..511)) add(Category.STICKERS)
     }
+
+    /** Rótulos do ML Kit que indicam prato servido/mesa posta. */
+    val PLATED_LABELS = setOf("tableware", "cutlery", "plate", "dish", "cuisine", "meal",
+        "lunch", "dinner", "brunch", "restaurant", "dessert", "wine")
+
+    fun isWhatsApp(meta: PhotoMeta): Boolean = meta.path.contains("whatsapp", ignoreCase = true)
+
+    /** Comida bonita (prato servido, nítida, fora do WhatsApp) fica; comida aleatória, borrada ou de WhatsApp vira sugestão. */
+    fun foodToDelete(meta: PhotoMeta, a: Analysis): Boolean =
+        a.food && !(a.plated && !isBlurry(a.sharpness) && !isWhatsApp(meta))
 
     fun isBlurry(variance: Double): Boolean = variance.isFinite() && variance >= 0 && variance < BLUR_THRESHOLD
     fun hamming(a: Long, b: Long): Int = java.lang.Long.bitCount(a xor b)
@@ -114,7 +126,7 @@ object PhotoRules {
             val categories = metadataCategories(photo.meta).toMutableSet()
             photo.analysis?.let {
                 if (isBlurry(it.sharpness)) categories.add(Category.BLURRY)
-                if (it.food) categories.add(Category.FOOD)
+                if (foodToDelete(photo.meta, it)) categories.add(Category.FOOD)
             }
             if (photo.meta.id in duplicated) categories.add(Category.DUPLICATES)
             photo.copy(categories = categories, keeper = photo.meta.id in keepers)
@@ -122,6 +134,8 @@ object PhotoRules {
     }
 
     fun initiallySelected(photo: Photo): Boolean {
+        // Fotos do Koda (gato) nunca são sugeridas.
+        if (photo.analysis?.cat == true) return false
         if (photo.meta.path.startsWith("DCIM/Camera/", ignoreCase = true) &&
             photo.categories == setOf(Category.BLURRY)) return false
         return photo.categories.isNotEmpty() && !photo.meta.favorite && !photo.keeper

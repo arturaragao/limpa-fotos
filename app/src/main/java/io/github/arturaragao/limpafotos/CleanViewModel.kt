@@ -42,7 +42,8 @@ class CleanViewModel(application: Application) : AndroidViewModel(application) {
             mutable.update { it.copy(scanning = true, progress = null, message = "Lendo a galeria…") }
             try {
                 val result = PhotoScanner(getApplication()).scan(limit) { progress -> mutable.update { it.copy(progress = progress) } }
-                val suggestions = result.photos.filter { it.categories.isNotEmpty() }
+                // Só aparecem as fotos que o app sugere apagar; o Artur desmarca o que quer manter.
+                val suggestions = result.photos.filter(PhotoRules::initiallySelected)
                 mutable.update { previous ->
                     val known = previous.photos.map { it.meta.id }.toHashSet()
                     previous.copy(photos = suggestions,

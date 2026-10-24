@@ -97,7 +97,7 @@ class PhotoScanner(private val context: Context) {
                 currentCoroutineContext().ensureActive()
                 try {
                     val activeLabeler = labeler ?: ImageLabeling.getClient(
-                        ImageLabelerOptions.Builder().setConfidenceThreshold(0.7f).build()).also { labeler = it }
+                        ImageLabelerOptions.Builder().setConfidenceThreshold(0.5f).build()).also { labeler = it }
                     completed[PhotoRules.analysisKey(meta)] = analyze(meta, activeLabeler)
                     // Each completed photo survives an error or interruption in the next one.
                     cacheWarning = !cache.write(hidden + completed) || cacheWarning
@@ -139,12 +139,16 @@ class PhotoScanner(private val context: Context) {
                 if (pixels[y * 9 + x] > pixels[y * 9 + x + 1]) hash = hash or (1L shl (y * 8 + x))
             }
             // suspendCoroutine intentionally keeps the bitmap alive until the native task completes.
-            val food = suspendCoroutine<Boolean> { continuation ->
+            val labels = suspendCoroutine<List<Pair<String, Float>>> { continuation ->
                 labeler.process(InputImage.fromBitmap(bitmap, 0))
-                    .addOnSuccessListener { labels -> continuation.resume(labels.any { it.text.equals("Food", true) && it.confidence >= 0.7f }) }
+                    .addOnSuccessListener { found -> continuation.resume(found.map { it.text.lowercase() to it.confidence }) }
                     .addOnFailureListener { continuation.resumeWithException(it) }
             }
-            return Analysis(hash, variance, food)
+            val food = labels.any { it.first == "food" && it.second >= 0.7f }
+            // Limiar baixo para gato: melhor deixar uma foto ruim do Koda do que sugerir apagar uma boa.
+            val cat = labels.any { it.first == "cat" && it.second >= 0.5f }
+            val plated = labels.any { it.first in PhotoRules.PLATED_LABELS && it.second >= 0.5f }
+            return Analysis(hash, variance, food, cat, plated)
         } finally {
             bitmap.recycle()
         }
@@ -163,15 +167,16 @@ class PhotoScanner(private val context: Context) {
 
 /** Versioned, atomic JSON in filesDir. Only id/date, hash, score and boolean; never image data. */
 private class AnalysisCache(context: Context) {
-    private val file = AtomicFile(File(context.filesDir, "analysis-v1.json"))
+    private val file = AtomicFile(File(context.filesDir, "analysis-v2.json"))
     fun read(): Map<String, Analysis> = try {
         val json = JSONObject(file.openRead().bufferedReader(Charsets.UTF_8).use { it.readText() })
-        if (json.optInt("version") != 1) emptyMap() else buildMap {
+        if (json.optInt("version") != 2) emptyMap() else buildMap {
             val entries = json.getJSONArray("entries")
             for (i in 0 until entries.length()) {
                 val e = entries.getJSONObject(i)
                 put(e.getString("key"), Analysis(e.getString("hash").toLong(),
-                    if (e.isNull("sharpness")) Double.NaN else e.getDouble("sharpness"), e.getBoolean("food")))
+                    if (e.isNull("sharpness")) Double.NaN else e.getDouble("sharpness"), e.getBoolean("food"),
+                    e.optBoolean("cat"), e.optBoolean("plated")))
             }
         }
     } catch (_: Exception) { emptyMap() }
@@ -181,8 +186,8 @@ private class AnalysisCache(context: Context) {
         return try {
             val list = JSONArray()
             entries.forEach { (key, a) -> list.put(JSONObject().put("key", key).put("hash", a.hash.toString())
-                .put("sharpness", if (a.sharpness.isFinite()) a.sharpness else JSONObject.NULL).put("food", a.food)) }
-            val bytes = JSONObject().put("version", 1).put("entries", list).toString().toByteArray(Charsets.UTF_8)
+                .put("sharpness", if (a.sharpness.isFinite()) a.sharpness else JSONObject.NULL).put("food", a.food).put("cat", a.cat).put("plated", a.plated)) }
+            val bytes = JSONObject().put("version", 2).put("entries", list).toString().toByteArray(Charsets.UTF_8)
             stream = file.startWrite()
             stream.write(bytes)
             file.finishWrite(stream)

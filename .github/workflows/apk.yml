@@ -55,13 +55,13 @@ jobs:
           VERSION_CODE: ${{ github.run_number }}
         run: >-
           ./gradlew --no-daemon testDebugUnitTest lintRelease assembleRelease
-          -PversionCode="$VERSION_CODE" -PversionName="0.2.$VERSION_CODE"
+          -PversionCode="$VERSION_CODE" -PversionName="0.3.$VERSION_CODE"
       - name: Nomear APK
         run: cp app/build/outputs/apk/release/app-release.apk limpa-fotos.apk
       - name: Publicar latest
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.${{ github.run_number }}
+          tag_name: v0.3.${{ github.run_number }}
           name: Limpa Fotos 0.1.${{ github.run_number }}
           make_latest: true
           target_commitish: ${{ github.sha }}

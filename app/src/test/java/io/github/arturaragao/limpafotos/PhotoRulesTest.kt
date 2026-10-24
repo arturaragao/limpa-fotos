@@ -158,6 +158,21 @@ class PhotoRulesTest {
         assertFalse(classified.keeper)
     }
 
+    @Test fun catPhotosAreNeverSuggested() {
+        val koda = PhotoRules.classify(listOf(Photo(meta(name = "Screenshot.jpg"),
+            Analysis(0, 20.0, false, cat = true), emptySet()))).single()
+        assertFalse(PhotoRules.initiallySelected(koda))
+    }
+
+    @Test fun niceFoodStaysUglyFoodGoes() {
+        val nice = Analysis(0, 500.0, true, plated = true)
+        assertFalse(PhotoRules.foodToDelete(meta(), nice))
+        assertTrue(PhotoRules.foodToDelete(meta(), nice.copy(plated = false)))
+        assertTrue(PhotoRules.foodToDelete(meta(), nice.copy(sharpness = 20.0)))
+        assertTrue(PhotoRules.foodToDelete(meta(path = "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/Sent/"), nice))
+        assertFalse(PhotoRules.foodToDelete(meta(), nice.copy(food = false)))
+    }
+
     @Test fun cameraBlurOnlyIsNotPremarkedButStaysInCategory() {
         val blurryOnly = Photo(meta(path = "dcim/camera/"), Analysis(0, 20.0, false), emptySet())
         val classified = PhotoRules.classify(listOf(blurryOnly)).single()

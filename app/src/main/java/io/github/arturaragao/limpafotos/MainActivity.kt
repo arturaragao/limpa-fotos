@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var summary: TextView
     private lateinit var accessNotice: TextView
     private lateinit var rescan: Button
+    private lateinit var quantity: EditText
     private lateinit var reminder: Button
     private lateinit var trash: Button
     private lateinit var progress: ProgressBar
@@ -151,12 +152,30 @@ class MainActivity : ComponentActivity() {
         status = text("", 13f, R.color.secondary).apply { setPadding(0, dp(12), 0, dp(8)) }
         root.addView(status)
 
-        rescan = action("") { if (model.state.value.scanning) model.stop() else model.scan() }.apply {
+        quantity = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            gravity = Gravity.CENTER
+            textSize = 18f
+            setTextColor(getColor(R.color.text))
+            background = rounded(this@MainActivity, R.color.surface, 16)
+            contentDescription = getString(R.string.analysis_limit)
+            setText(model.state.value.batchLimit.toString())
+        }
+        rescan = action("") {
+            if (model.state.value.scanning) model.stop() else {
+                val value = quantity.text.toString().toIntOrNull()
+                if (value == null || value !in 1..100_000) quantity.error = getString(R.string.invalid_limit)
+                else { model.setBatchLimit(value); model.scan() }
+            }
+        }.apply {
             setTextColor(getColor(R.color.on_accent))
             backgroundTintList = ColorStateList.valueOf(getColor(R.color.accent))
             setTypeface(typeface, Typeface.BOLD)
         }
-        root.addView(rescan, LinearLayout.LayoutParams(-1, dp(52)))
+        val analyzeRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        analyzeRow.addView(quantity, LinearLayout.LayoutParams(dp(88), dp(52)).apply { marginEnd = dp(8) })
+        analyzeRow.addView(rescan, LinearLayout.LayoutParams(0, dp(52), 1f))
+        root.addView(analyzeRow, LinearLayout.LayoutParams(-1, -2))
         reminder = action("Ativar lembrete mensal") {
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 notificationRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -226,10 +245,13 @@ class MainActivity : ComponentActivity() {
         rescan.text = when {
             state.scanning -> getString(R.string.stop_analysis)
             complete -> getString(R.string.check_new_photos)
-            counts.done == 0 -> getString(R.string.analyze_first, state.batchLimit)
-            else -> getString(R.string.analyze_more, state.batchLimit)
+            counts.done == 0 -> getString(R.string.analyze_first)
+            else -> getString(R.string.analyze_more)
         }
         rescan.isEnabled = mode > 0 && !trashPending
+        quantity.visibility = if (state.scanning || complete) View.GONE else View.VISIBLE
+        if (!quantity.hasFocus() && quantity.text.toString() != state.batchLimit.toString())
+            quantity.setText(state.batchLimit.toString())
         rescan.alpha = if (rescan.isEnabled) 1f else 0.5f
         if (state.photos !== lastPhotos || state.category != lastCategory) {
             for ((category, chip) in chips) {
