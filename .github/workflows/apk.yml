@@ -62,12 +62,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v0.3.${{ github.run_number }}
-          name: Limpa Fotos 0.1.${{ github.run_number }}
+          name: Limpa Fotos 0.3.${{ github.run_number }}
           make_latest: true
           target_commitish: ${{ github.sha }}
           files: limpa-fotos.apk
           fail_on_unmatched_files: true
-          body: Limpa Fotos 0.1.${{ github.run_number }} — APK release assinado.
+          body: Limpa Fotos 0.3.${{ github.run_number }} — APK release assinado.
       - name: Remover keystore temporário
         if: always()
         run: rm -f -- keystore.p12
