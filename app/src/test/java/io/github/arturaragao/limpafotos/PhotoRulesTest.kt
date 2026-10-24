@@ -79,26 +79,29 @@ class PhotoRulesTest {
 
     @Test fun screenshotNamesAndPathsAreCaseInsensitive() {
         for (m in listOf(meta(name = "Screenshot_2026.jpg"), meta(path = "Pictures/SCREENSHOTS/"),
-            meta(path = "Movies/Screen recordings/"))) {
+            meta(name = "Captura de tela 2026.png"))) {
             assertTrue(Category.PRINTS in PhotoRules.metadataCategories(m))
         }
         assertFalse(Category.PRINTS in PhotoRules.metadataCategories(meta()))
+        assertFalse(Category.PRINTS in PhotoRules.metadataCategories(meta(path = "Movies/Screen recordings/")))
     }
 
-    @Test fun gifsWebpFoldersAndSmallSidesAreStickers() {
-        for (m in listOf(meta(mime = "image/gif"), meta(mime = "image/webp"),
-            meta(path = "WhatsApp/Media/WhatsApp Stickers/"), meta(path = "WhatsApp Animated Gifs/"),
-            meta(width = 511), meta(height = 511))) {
+    @Test fun onlySmallSquareWebpOrStickerFolderAreStickers() {
+        for (m in listOf(meta(mime = "image/webp", width = 512, height = 512), meta(path = "WhatsApp/Media/WhatsApp Stickers/"))) {
             assertTrue(Category.STICKERS in PhotoRules.metadataCategories(m))
         }
         assertFalse(Category.STICKERS in PhotoRules.metadataCategories(meta(width = 512, height = 512)))
         assertFalse(Category.STICKERS in PhotoRules.metadataCategories(meta(width = 0, height = 0)))
+        for (m in listOf(meta(mime = "image/gif"), meta(path = "WhatsApp Animated Gifs/"),
+            meta(width = 511), meta(height = 511), meta(mime = "image/webp"),
+            meta(mime = "image/webp", width = 512, height = 400))) assertFalse(Category.STICKERS in PhotoRules.metadataCategories(m))
     }
 
     @Test fun blurThresholdAndInvalidScores() {
         assertTrue(PhotoRules.isBlurry(0.0))
-        assertTrue(PhotoRules.isBlurry(99.999))
-        assertFalse(PhotoRules.isBlurry(100.0))
+        assertTrue(PhotoRules.isBlurry(14.999))
+        assertFalse(PhotoRules.isBlurry(15.0))
+        assertFalse(PhotoRules.isBlurry(99.999))
         assertFalse(PhotoRules.isBlurry(-1.0))
         assertFalse(PhotoRules.isBlurry(Double.NaN))
         assertFalse(PhotoRules.isBlurry(Double.POSITIVE_INFINITY))
@@ -144,18 +147,18 @@ class PhotoRulesTest {
     }
 
     @Test fun favoritesAreNeverPremarkedInAnyCategory() {
-        val favorite = Photo(meta(favorite = true, mime = "image/gif", name = "Screenshot.gif"),
+        val favorite = Photo(meta(favorite = true, mime = "image/webp", name = "Screenshot.webp", width = 512, height = 512),
             Analysis(0, 0.0, true), emptySet())
         val classified = PhotoRules.classify(listOf(favorite)).single()
-        assertEquals(setOf(Category.PRINTS, Category.STICKERS, Category.BLURRY, Category.FOOD), classified.categories)
+        assertEquals(setOf(Category.PRINTS, Category.STICKERS, Category.BLURRY), classified.categories)
         assertFalse(PhotoRules.initiallySelected(classified))
         assertTrue(PhotoRules.initiallySelected(classified.copy(meta = classified.meta.copy(favorite = false))))
     }
 
-    @Test fun unavailableVisualAnalysisStillAllowsMetadataCategories() {
-        val classified = PhotoRules.classify(listOf(Photo(meta(name = "Screenshot.jpg"), null, emptySet()))).single()
-        assertEquals(setOf(Category.PRINTS), classified.categories)
-        assertFalse(classified.keeper)
+    @Test fun unavailableAnalysisCannotBypassPersonProtectionViaMetadata() {
+        val unknown = Photo(meta(name = "Screenshot.jpg"), null, setOf(Category.PRINTS))
+        assertTrue(PhotoRules.classify(listOf(unknown)).isEmpty())
+        assertFalse(PhotoRules.initiallySelected(unknown))
     }
 
     @Test fun catPhotosAreNeverSuggested() {
@@ -164,17 +167,14 @@ class PhotoRulesTest {
         assertFalse(PhotoRules.initiallySelected(koda))
     }
 
-    @Test fun niceFoodStaysUglyFoodGoes() {
-        val nice = Analysis(0, 500.0, true, plated = true)
-        assertFalse(PhotoRules.foodToDelete(meta(), nice))
-        assertTrue(PhotoRules.foodToDelete(meta(), nice.copy(plated = false)))
-        assertTrue(PhotoRules.foodToDelete(meta(), nice.copy(sharpness = 20.0)))
-        assertTrue(PhotoRules.foodToDelete(meta(path = "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/Sent/"), nice))
-        assertFalse(PhotoRules.foodToDelete(meta(), nice.copy(food = false)))
+    @Test fun foodAloneIsNeverASuggestion() {
+        val food = Photo(meta(), Analysis(0, 500.0, food = true), emptySet())
+        assertTrue(PhotoRules.classify(listOf(food)).single().categories.isEmpty())
+        assertFalse(PhotoRules.initiallySelected(PhotoRules.classify(listOf(food)).single()))
     }
 
     @Test fun cameraBlurOnlyIsNotPremarkedButStaysInCategory() {
-        val blurryOnly = Photo(meta(path = "dcim/camera/"), Analysis(0, 20.0, false), emptySet())
+        val blurryOnly = Photo(meta(path = "dcim/camera/"), Analysis(0, 10.0, false), emptySet())
         val classified = PhotoRules.classify(listOf(blurryOnly)).single()
         assertEquals(setOf(Category.BLURRY), classified.categories)
         assertFalse(PhotoRules.initiallySelected(classified))
@@ -182,6 +182,123 @@ class PhotoRulesTest {
         assertTrue(PhotoRules.initiallySelected(elsewhere))
         val extra = classified.copy(categories = setOf(Category.BLURRY, Category.DUPLICATES))
         assertTrue(PhotoRules.initiallySelected(extra))
+    }
+
+    @Test fun keptIdsAreExcludedFromEveryCategoryEvenAfterModification() {
+        val kept = Photo(meta(1, mime = "image/webp", name = "Screenshot.webp"),
+            Analysis(0, 1.0, document = true, whatsappJunk = true), Category.entries.toSet())
+        val other = photo(2)
+        val ids = setOf(1L)
+        assertEquals(listOf(other), PhotoRules.filterKept(listOf(kept, other), ids))
+        assertTrue(PhotoRules.classify(listOf(kept), ids).isEmpty())
+        assertTrue(PhotoRules.classify(listOf(kept.copy(meta = kept.meta.copy(modified = 999))), ids).isEmpty())
+        assertTrue(PhotoRules.classify(listOf(kept), emptySet()).single().categories.isNotEmpty())
+    }
+
+    @Test fun keptIdsDoNotConsumeBatchAndResetMakesThemEligibleAgain() {
+        val all = listOf(meta(1, taken = 300), meta(2, taken = 200), meta(3, taken = 100))
+        assertEquals(listOf(2L, 3L), PhotoRules.nextUnanalyzed(all, emptySet(), 2, setOf(1)).map { it.id })
+        assertEquals(listOf(1L, 2L), PhotoRules.nextUnanalyzed(all, emptySet(), 2, emptySet()).map { it.id })
+        val cached = setOf(PhotoRules.analysisKey(all[1]))
+        assertEquals(listOf(3L), PhotoRules.nextUnanalyzed(all, cached, 2, setOf(1)).map { it.id })
+    }
+
+    @Test fun keptDuplicateCannotCauseAnotherDeletionSuggestion() {
+        val result = PhotoRules.classify(listOf(photo(1), photo(2)), setOf(1))
+        assertEquals(listOf(2L), result.map { it.meta.id })
+        assertTrue(result.single().categories.isEmpty())
+    }
+
+    @Test fun facesAndPersonLabelsExcludeEveryCategoryIncludingDuplicates() {
+        for (analysis in listOf(Analysis(0, 1.0, hasFace = true), Analysis(0, 1.0, person = true))) {
+            val person = Photo(meta(1, path = "WhatsApp/Media/WhatsApp Images/", name = "Screenshot.webp", mime = "image/webp"),
+                analysis.copy(document = true, whatsappJunk = true), Category.entries.toSet())
+            assertTrue(PhotoRules.classify(listOf(person)).isEmpty())
+            assertFalse(PhotoRules.initiallySelected(person))
+            assertTrue(PhotoRules.duplicateGroups(listOf(person, photo(2))).isEmpty())
+            val result = PhotoRules.classify(listOf(person, photo(2)))
+            assertEquals(listOf(2L), result.map { it.meta.id })
+            assertFalse(Category.DUPLICATES in result.single().categories)
+        }
+    }
+
+    @Test fun personLabelsAreCaseInsensitiveAndProtectAtLowConfidence() {
+        for (label in listOf("Selfie", "Person", "FACE", "Portrait", "People", "Baby", "Crowd")) {
+            assertTrue(PhotoRules.hasPersonLabel(listOf(label to 0.4f)))
+        }
+        assertFalse(PhotoRules.hasPersonLabel(listOf("Person" to 0.399f)))
+        assertFalse(PhotoRules.hasPersonLabel(listOf("Landscape" to 0.99f)))
+        assertFalse(PhotoRules.hasPersonLabel(listOf("Person" to Float.NaN)))
+    }
+
+    @Test fun documentsAndWhatsappJunkRequireStrongEvidence() {
+        assertTrue(PhotoRules.hasDocumentLabel(listOf("Paper" to 0.9f)))
+        assertFalse(PhotoRules.hasDocumentLabel(listOf("Paper" to 0.89f)))
+        assertTrue(PhotoRules.hasJunkLabel(listOf("Comics" to 0.95f)))
+        assertFalse(PhotoRules.hasJunkLabel(listOf("Comics" to 0.94f)))
+        val base = Photo(meta(path = "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/"),
+            Analysis(0, 500.0), emptySet())
+        assertTrue(PhotoRules.classify(listOf(base)).single().categories.isEmpty())
+        val junk = base.copy(analysis = base.analysis!!.copy(whatsappJunk = true))
+        assertEquals(setOf(Category.WHATSAPP), PhotoRules.classify(listOf(junk)).single().categories)
+        for (path in listOf("DCIM/Camera/", "WhatsApp/Media/WhatsApp Images/Sent/")) {
+            assertFalse(Category.WHATSAPP in PhotoRules.classify(listOf(junk.copy(meta = junk.meta.copy(path = path)))).single().categories)
+        }
+        val document = base.copy(analysis = base.analysis!!.copy(document = true))
+        assertTrue(Category.DOCUMENTS in PhotoRules.classify(listOf(document)).single().categories)
+    }
+
+    @Test fun googleFlowDeduplicatesQueueAndCountsOnlyConfirmedDisappearances() {
+        val start = PhotoRules.startGooglePhotos(listOf(5, 5, 8))
+        assertEquals(listOf(5L, 8L), start.ids)
+        assertEquals("1 de 2", start.progressText)
+        val opened = PhotoRules.openGooglePhoto(start)
+        assertTrue(opened.awaitingReturn)
+        assertEquals(opened, PhotoRules.openGooglePhoto(opened))
+        val next = PhotoRules.returnedFromGooglePhotos(opened, MediaPresence.MISSING)
+        assertEquals(8L, next.currentId)
+        assertEquals(1, next.deleted)
+        assertEquals("2 de 2", next.progressText)
+        assertEquals(next, PhotoRules.returnedFromGooglePhotos(next, MediaPresence.MISSING))
+        val done = PhotoRules.returnedFromGooglePhotos(PhotoRules.openGooglePhoto(next), MediaPresence.MISSING)
+        assertTrue(done.finished)
+        assertNull(done.currentId)
+        assertEquals(2, done.deleted)
+        assertEquals("2 de 2", done.progressText)
+        assertEquals(done, PhotoRules.openGooglePhoto(done))
+    }
+
+    @Test fun googlePhotoStillPresentOrUnreadableWaitsForExplicitSkipOrRetry() {
+        for (presence in listOf(MediaPresence.EXISTS, MediaPresence.UNKNOWN)) {
+            val opened = PhotoRules.openGooglePhoto(PhotoRules.startGooglePhotos(listOf(1, 2)))
+            val waiting = PhotoRules.returnedFromGooglePhotos(opened, presence)
+            assertTrue(waiting.needsDecision)
+            assertFalse(waiting.awaitingReturn)
+            assertEquals(1L, waiting.currentId)
+            assertEquals(0, waiting.deleted)
+            assertEquals(waiting, PhotoRules.openGooglePhoto(waiting))
+            val retry = PhotoRules.openGooglePhoto(PhotoRules.retryGooglePhoto(waiting))
+            assertEquals(1L, retry.currentId)
+            assertTrue(retry.awaitingReturn)
+            val skipped = PhotoRules.skipGooglePhoto(waiting)
+            assertEquals(2L, skipped.currentId)
+            assertEquals(1, skipped.skipped)
+            assertEquals(0, skipped.deleted)
+            assertFalse(skipped.needsDecision)
+            assertEquals(skipped, PhotoRules.skipGooglePhoto(skipped))
+        }
+    }
+
+    @Test fun googleFlowHandlesEmptyAndMixedCompletionWithoutDoubleCounting() {
+        val empty = PhotoRules.startGooglePhotos(emptyList())
+        assertTrue(empty.finished)
+        assertEquals("0 de 0", empty.progressText)
+        val first = PhotoRules.openGooglePhoto(PhotoRules.startGooglePhotos(listOf(1, 2)))
+        val skipped = PhotoRules.skipGooglePhoto(PhotoRules.returnedFromGooglePhotos(first, MediaPresence.EXISTS))
+        val done = PhotoRules.returnedFromGooglePhotos(PhotoRules.openGooglePhoto(skipped), MediaPresence.MISSING)
+        assertTrue(done.finished)
+        assertEquals(done.ids.size, done.deleted + done.skipped)
+        assertEquals(done, PhotoRules.returnedFromGooglePhotos(done, MediaPresence.MISSING))
     }
 
     @Test fun megabytesAreDecimalPortugueseAndNeverNegative() {
