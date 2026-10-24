@@ -1,5 +1,6 @@
 package io.github.arturaragao.limpafotos
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.ImageDecoder
@@ -155,6 +156,7 @@ class PhotoActivity : ComponentActivity() {
 }
 
 /** Native pinch/double-tap zoom and pan. Swipes navigate only at the fitted scale. */
+@SuppressLint("AppCompatCustomView") // app usa só Theme.Material nativo, sem AppCompat
 private class ZoomPhotoView(context: Context, private val navigate: (Int) -> Unit) : ImageView(context) {
     private val transform = Matrix()
     private var zoom = 1f
