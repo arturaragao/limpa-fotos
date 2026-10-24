@@ -124,7 +124,8 @@ class MainActivity : ComponentActivity() {
         setContentView(root)
         root.requestApplyInsets()
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        header.addView(text("Limpa Fotos", 28f).apply { setTypeface(typeface, Typeface.BOLD) },
+        header.addView(text("Limpa Fotos", 28f).apply { setTypeface(typeface, Typeface.BOLD) })
+        header.addView(text("v${BuildConfig.VERSION_NAME}", 13f, R.color.secondary).apply { setPadding(dp(8), dp(8), 0, 0) },
             LinearLayout.LayoutParams(0, -2, 1f))
         header.addView(ImageButton(this).apply {
             setImageResource(R.drawable.ic_settings)
