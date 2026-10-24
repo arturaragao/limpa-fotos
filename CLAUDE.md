@@ -114,3 +114,5 @@ eventuais mudanças nos hosts de download do GitHub.
 ## Próximo passo (24/10/2026, PC do trabalho desligado no meio)
 Ramo `wip-google-fotos`: trabalho do Codex forte interrompido, NÃO revisado. Pedido completo em `PEDIDO-24-10.txt`.
 Falta: conferir no diff o que dos 9 itens do pedido foi feito, completar o resto, testes, juntar no `main` (dispara o APK) e testar no celular o fluxo "Apagar no Google Fotos".
+- Codex terminou (841 s): diz que fez os 9 itens, 32 testes declarados, sem build local. Conferir: ele pôs versionName 0.1.2, mas o main já publica 0.3.N — acertar antes do merge.
+- ATENÇÃO: não rodar o workflow apk.yml no ramo wip: ele publica release e o celular atualiza sozinho. Validar só depois de revisar, juntando no main.
