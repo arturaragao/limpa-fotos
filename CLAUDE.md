@@ -47,6 +47,9 @@ público `arturaragao/limpa-fotos`. Kotlin, applicationId
 
 ## Estado atual
 
+Lotes configuráveis (padrão 200 salvo em SharedPreferences), continuidade pelo cache e progresso X/Y implementados.
+Engrenagem com limite, permissões e versão; resumo visual renovado. Novos testes JVM escritos; execução local bloqueada pelo gradle-wrapper.jar ausente.
+
 Implementação inicial escrita em 24/10/2026. Testes JVM em app/src/test cobrem
 Hamming, agrupamento e limites, favoritos, metadados, Laplaciano/limiar, MB e
 UpdateVersion. Ambiente informado tem só Java 8 e não tem SDK: o build Android
@@ -65,6 +68,7 @@ eventuais mudanças nos hosts de download do GitHub.
 
 ## Histórico
 
+- 24/10/2026: análise incremental com cache por foto, Configurações e ajustes visuais; sem mudanças de versão, dependências ou commits.
 - 24/10/2026: app criado do zero, adaptando build, wrapper, assinatura, workflow,
   atualizador e FileProvider dos arquivos indicados no projeto de referência.
   Nenhum commit ou push realizado.

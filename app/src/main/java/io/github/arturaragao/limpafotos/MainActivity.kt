@@ -2,6 +2,7 @@ package io.github.arturaragao.limpafotos
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -11,15 +12,18 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.provider.Settings
-import android.net.Uri
+import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
 import android.widget.Button
+import android.widget.EditText
 import android.widget.GridView
 import android.widget.HorizontalScrollView
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -35,7 +39,8 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private val model: CleanViewModel by viewModels()
     private lateinit var status: TextView
-    private lateinit var access: Button
+    private lateinit var summary: TextView
+    private lateinit var accessNotice: TextView
     private lateinit var rescan: Button
     private lateinit var reminder: Button
     private lateinit var trash: Button
@@ -50,7 +55,7 @@ class MainActivity : ComponentActivity() {
 
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         accessMode = MediaAccess.mode(this)
-        if (accessMode > 0) model.scan() else {
+        if (accessMode > 0) model.scan(analyzeMore = !model.state.value.scanned) else {
             model.clearAccess()
             model.message("Autorize o acesso às fotos. Se o Android não perguntar novamente, use Configurações do app.")
         }
@@ -63,7 +68,7 @@ class MainActivity : ComponentActivity() {
         trashPending = false
         if (result.resultCode == Activity.RESULT_OK) {
             // A fresh MediaStore query, not an assumed deletion, is authoritative.
-            model.scan()
+            model.scan(analyzeMore = false)
         } else model.message("Movimentação cancelada. Suas fotos continuam na galeria.")
         render(model.state.value)
     }
@@ -88,9 +93,10 @@ class MainActivity : ComponentActivity() {
         if (mode == 0) {
             if (accessMode != mode) model.clearAccess()
         } else if ((accessMode >= 0 && accessMode != mode) || !model.state.value.scanned) {
-            if (!trashPending) model.scan()
+            if (!trashPending) model.scan(analyzeMore = !model.state.value.scanned)
         }
         accessMode = mode
+        render(model.state.value)
         updateReminderButton()
         Updater.checkOnOpen(this, intent.getBooleanExtra(Updater.EXTRA, false))
         intent.removeExtra(Updater.EXTRA)
@@ -115,23 +121,47 @@ class MainActivity : ComponentActivity() {
         }
         setContentView(root)
         root.requestApplyInsets()
-        root.addView(text("Limpa Fotos", 28f).apply { setTypeface(typeface, Typeface.BOLD) })
-        root.addView(text("Mais espaço, com tudo no seu aparelho.", 14f, R.color.secondary))
+        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        header.addView(text("Limpa Fotos", 28f).apply { setTypeface(typeface, Typeface.BOLD) },
+            LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(ImageButton(this).apply {
+            setImageResource(R.drawable.ic_settings)
+            imageTintList = ColorStateList.valueOf(getColor(R.color.text))
+            background = rounded(this@MainActivity, R.color.surface, 16)
+            contentDescription = getString(R.string.settings)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setOnClickListener { showSettings() }
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        root.addView(header)
+        summary = text("", 17f).apply {
+            setTypeface(typeface, Typeface.BOLD)
+            background = rounded(this@MainActivity, R.color.surface, 20)
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+        }
+        root.addView(summary, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
+        accessNotice = text("", 13f, R.color.accent).apply {
+            setPadding(0, dp(8), 0, dp(8))
+            minHeight = dp(48)
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = true
+            setOnClickListener { showSettings() }
+        }
+        root.addView(accessNotice)
         status = text("", 13f, R.color.secondary).apply { setPadding(0, dp(12), 0, dp(8)) }
         root.addView(status)
 
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        access = action("Permitir fotos") { permissionRequest.launch(MediaAccess.permissions()) }
-        rescan = action("Varrer novamente") { model.scan() }
-        actions.addView(access, LinearLayout.LayoutParams(0, dp(48), 1f))
-        actions.addView(rescan, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
-        root.addView(actions)
+        rescan = action("") { model.scan() }.apply {
+            setTextColor(getColor(R.color.on_accent))
+            backgroundTintList = ColorStateList.valueOf(getColor(R.color.accent))
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        root.addView(rescan, LinearLayout.LayoutParams(-1, dp(52)))
         reminder = action("Ativar lembrete mensal") {
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 notificationRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
             } else startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
         }
-        root.addView(reminder, LinearLayout.LayoutParams(-1, dp(48)))
+        root.addView(reminder, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(8) })
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { visibility = View.GONE }
         root.addView(progress, LinearLayout.LayoutParams(-1, dp(8)).apply { topMargin = dp(8); bottomMargin = dp(8) })
 
@@ -181,15 +211,19 @@ class MainActivity : ComponentActivity() {
 
     private fun render(state: CleanState) {
         val mode = MediaAccess.mode(this)
-        status.text = if (state.scanning) {
-            state.progress?.let { "Analisando ${it.done} de ${it.total} imagens…" } ?: "Lendo a galeria…"
-        } else (if (mode == 1) "Acesso parcial: apenas as fotos permitidas. " else "") + state.message
+        val counts = state.progress ?: ScanProgress(0, 0)
+        val reclaimable = state.photos.filter(PhotoRules::initiallySelected).sumOf { it.meta.bytes }
+        summary.text = getString(R.string.analysis_summary, counts.done, counts.total, PhotoRules.formatMb(reclaimable))
+        status.text = if (state.scanning) "Analisando este lote…" else state.message
+        accessNotice.visibility = if (mode < 2) View.VISIBLE else View.GONE
+        accessNotice.text = getString(if (mode == 1) R.string.partial_access else R.string.no_access)
         progress.visibility = if (state.scanning) View.VISIBLE else View.GONE
         progress.isIndeterminate = state.progress == null
         state.progress?.let { progress.max = it.total.coerceAtLeast(1); progress.progress = it.done }
-        access.text = if (mode == 0) "Permitir fotos" else "Escolher acesso"
-        access.isEnabled = !state.scanning && !trashPending
+        val complete = state.scanned && counts.done == counts.total
+        rescan.text = if (complete) getString(R.string.check_new_photos) else getString(R.string.analyze_more, state.batchLimit)
         rescan.isEnabled = mode > 0 && !state.scanning && !trashPending
+        rescan.alpha = if (rescan.isEnabled) 1f else 0.5f
         if (state.photos !== lastPhotos || state.category != lastCategory) {
             for ((category, chip) in chips) {
                 val photos = if (category == null) state.photos else state.photos.filter { category in it.categories }
@@ -203,13 +237,69 @@ class MainActivity : ComponentActivity() {
             lastPhotos = state.photos
             lastCategory = state.category
             empty.visibility = if (visible.isEmpty()) View.VISIBLE else View.GONE
-            empty.text = if (state.scanning) "A primeira análise pode levar alguns minutos." else if (state.scanned) "Nenhuma sugestão nesta categoria." else "Sua galeria será analisada aqui."
         } else adapter.selection(state.selected)
+        empty.text = if (state.scanning) "Analisando este lote de fotos." else if (state.scanned)
+            "Nenhuma sugestão nesta categoria entre as fotos analisadas." else "Sua galeria será analisada aqui."
         adapter.enabled = !state.scanning && !trashPending
         val selected = state.photos.filter { it.meta.id in state.selected }
         trash.text = "Mover ${selected.size} para a lixeira (${PhotoRules.formatMb(selected.sumOf { it.meta.bytes })})"
         trash.isEnabled = selected.isNotEmpty() && !state.scanning && !trashPending && mode > 0
         trash.alpha = if (trash.isEnabled) 1f else 0.5f
+    }
+
+    private fun showSettings() {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), dp(16))
+        }
+        val label = text(getString(R.string.analysis_limit), 16f)
+        content.addView(label)
+        val limit = EditText(this).apply {
+            id = View.generateViewId()
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setSingleLine(true)
+            setText(model.state.value.batchLimit.toString())
+            setTextColor(getColor(R.color.text))
+            selectAll()
+        }
+        label.labelFor = limit.id
+        content.addView(limit, LinearLayout.LayoutParams(-1, dp(56)))
+        content.addView(text(getString(R.string.batch_explanation), 13f, R.color.secondary))
+        val permissions = action(getString(R.string.access_permissions)) { }
+        permissions.isEnabled = !model.state.value.scanning && !trashPending
+        content.addView(permissions, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(16) })
+        @Suppress("DEPRECATION")
+        val version = packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
+        content.addView(text(getString(R.string.app_version, version), 13f, R.color.secondary).apply {
+            setPadding(0, dp(16), 0, 0)
+        })
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.settings)
+            .setView(ScrollView(this).apply { addView(content) })
+            .setPositiveButton(R.string.save, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        fun saveLimit(): Boolean {
+            val value = limit.text.toString().toIntOrNull()
+            if (value == null || value <= 0) {
+                limit.error = getString(R.string.invalid_limit)
+                return false
+            }
+            model.setBatchLimit(value)
+            return true
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if (saveLimit()) dialog.dismiss()
+            }
+        }
+        permissions.setOnClickListener {
+            if (saveLimit()) {
+                dialog.dismiss()
+                permissionRequest.launch(MediaAccess.permissions())
+            }
+        }
+        dialog.show()
     }
 
     private fun moveToTrash() {

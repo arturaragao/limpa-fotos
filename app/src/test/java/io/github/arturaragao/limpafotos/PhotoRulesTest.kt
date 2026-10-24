@@ -13,6 +13,63 @@ class PhotoRulesTest {
         sharpness: Double = 150.0, favorite: Boolean = false) =
         Photo(meta(id, taken = time, width = width, favorite = favorite), Analysis(hash, sharpness, false), emptySet())
 
+    @Test fun nextBatchUsesNewestUncachedPhotosWithoutSpendingLimitOnCacheHits() {
+        val all = listOf(meta(1, taken = 100), meta(4, taken = 400), meta(2, taken = 200), meta(3, taken = 300))
+        val cached = setOf(PhotoRules.analysisKey(all[1]), PhotoRules.analysisKey(all[3]))
+        assertEquals(listOf(2L, 1L), PhotoRules.nextUnanalyzed(all, cached, 2).map { it.id })
+    }
+
+    @Test fun batchesContinueFromCacheIncludingWorkSavedBeforeAnError() {
+        val all = (1L..7L).map { meta(it, taken = it * 100) }
+        val first = PhotoRules.nextUnanalyzed(all, emptySet(), 3)
+        assertEquals(listOf(7L, 6L, 5L), first.map { it.id })
+        // The second photo failed: only completed analyses were saved before interruption.
+        val saved = setOf(PhotoRules.analysisKey(first[0]))
+        val retry = PhotoRules.nextUnanalyzed(all, saved, 3)
+        assertEquals(listOf(6L, 5L, 4L), retry.map { it.id })
+        val next = PhotoRules.nextUnanalyzed(all, saved + retry.map(PhotoRules::analysisKey), 3)
+        assertEquals(listOf(3L, 2L, 1L), next.map { it.id })
+    }
+
+    @Test fun modifiedPhotosAreEligibleAgainAndNewPhotosComeFirst() {
+        val original = meta(1, taken = 100)
+        val changed = original.copy(modified = original.modified + 1)
+        val added = meta(2, taken = 200)
+        val cache = setOf(PhotoRules.analysisKey(original))
+        assertEquals(listOf(added, changed), PhotoRules.nextUnanalyzed(listOf(changed, added), cache, 200))
+        assertTrue(PhotoRules.nextUnanalyzed(listOf(original), cache, 200).isEmpty())
+    }
+
+    @Test fun unknownCaptureTimeUsesDateAddedAndTiesUseId() {
+        val all = listOf(meta(1, taken = 0).copy(addedAt = 300), meta(2, taken = 200),
+            meta(3, taken = 300), meta(4, taken = 0))
+        assertEquals(listOf(3L, 1L, 2L, 4L), PhotoRules.nextUnanalyzed(all, emptySet(), 200).map { it.id })
+        assertEquals(0L, all.first().takenAt) // Unknown times stay unknown to duplicate grouping.
+    }
+
+    @Test fun batchLimitHandlesEmptyZeroAndExhaustedGallery() {
+        assertTrue(PhotoRules.nextUnanalyzed(emptyList(), emptySet(), 200).isEmpty())
+        val all = listOf(meta(1), meta(2))
+        assertTrue(PhotoRules.nextUnanalyzed(all, emptySet(), 0).isEmpty())
+        assertEquals(1, PhotoRules.nextUnanalyzed(all, emptySet(), 1).size)
+        assertEquals(2, PhotoRules.nextUnanalyzed(all, emptySet(), 200).size)
+        assertTrue(PhotoRules.nextUnanalyzed(all, all.map(PhotoRules::analysisKey).toSet(), 200).isEmpty())
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun batchLimitRejectsNegativeValues() {
+        PhotoRules.nextUnanalyzed(emptyList(), emptySet(), -1)
+    }
+
+    @Test fun classificationAcrossBatchesStillProtectsFavoritesAndBestDuplicate() {
+        val cached = photo(1, favorite = true)
+        val newPhoto = photo(2, width = 1800)
+        val results = PhotoRules.classify(listOf(cached, newPhoto))
+        assertTrue(results.all { Category.DUPLICATES in it.categories })
+        assertTrue(results.last().keeper)
+        assertTrue(results.none(PhotoRules::initiallySelected))
+    }
+
     @Test fun hammingIncludesSignBitAndAllBits() {
         assertEquals(0, PhotoRules.hamming(Long.MIN_VALUE, Long.MIN_VALUE))
         assertEquals(1, PhotoRules.hamming(0, Long.MIN_VALUE))

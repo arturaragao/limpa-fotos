@@ -17,7 +17,8 @@ data class PhotoMeta(
     val height: Int,
     val bytes: Long,
     val takenAt: Long,
-    val favorite: Boolean
+    val favorite: Boolean,
+    val addedAt: Long = 0
 )
 
 data class Analysis(val hash: Long, val sharpness: Double, val food: Boolean)
@@ -33,6 +34,17 @@ object PhotoRules {
     const val BLUR_THRESHOLD = 100.0
     const val DUPLICATE_DISTANCE = 6
     const val HOUR_MS = 3_600_000L
+
+    fun analysisKey(meta: PhotoMeta): String = "${meta.id}:${meta.modified}"
+
+    /** Cache hits never consume the batch. A changed file must be analyzed again. */
+    fun nextUnanalyzed(all: List<PhotoMeta>, analyzedKeys: Set<String>, limit: Int): List<PhotoMeta> {
+        require(limit >= 0)
+        return all.asSequence().filter { analysisKey(it) !in analyzedKeys }
+            .sortedWith(compareByDescending<PhotoMeta> { if (it.takenAt > 0) it.takenAt else it.addedAt }
+                .thenByDescending { it.id })
+            .take(limit).toList()
+    }
 
     fun metadataCategories(meta: PhotoMeta): Set<Category> = buildSet {
         val path = meta.path.lowercase(Locale.ROOT)

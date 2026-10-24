@@ -50,7 +50,8 @@ object MediaAccess {
 fun photoUri(id: Long): Uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
 
 data class ScanProgress(val done: Int, val total: Int)
-data class ScanResult(val photos: List<Photo>, val unreadable: Int, val cacheWarning: Boolean)
+data class ScanResult(val photos: List<Photo>, val unreadable: Int, val cacheWarning: Boolean,
+    val progress: ScanProgress)
 
 class PhotoScanner(private val context: Context) {
     /** Images only, including GIF/WebP. No bytes are read by the monthly worker. */
@@ -70,56 +71,51 @@ class PhotoScanner(private val context: Context) {
                 result.add(PhotoMeta(c.getLong(0), c.getLong(1), c.getString(2).orEmpty(),
                     c.getString(3).orEmpty(), c.getString(4).orEmpty(), c.getInt(5), c.getInt(6),
                     c.getLong(7).coerceAtLeast(0), if (taken > 0) taken else 0L,
-                    c.getInt(10) == 1))
+                    c.getInt(10) == 1, c.getLong(9) * 1000))
             }
         }
         return result
     }
 
-    suspend fun scan(progress: (ScanProgress) -> Unit): ScanResult = withContext(Dispatchers.IO) {
+    suspend fun scan(limit: Int = 200, progress: (ScanProgress) -> Unit): ScanResult = withContext(Dispatchers.IO) {
         val all = metadata()
         val cache = AnalysisCache(context)
-        val old = cache.read()
-        val validKeys = all.map { "${it.id}:${it.modified}" }.toHashSet()
-        val next = linkedMapOf<String, Analysis>()
-        val photos = ArrayList<Photo>(all.size)
+        val stored = cache.read()
+        val validKeys = all.map(PhotoRules::analysisKey).toHashSet()
+        val completed = stored.filterKeys { it in validKeys }.toMutableMap()
+        // Partial access hides media without deleting it: retain its cached analyses.
+        val hidden = if (MediaAccess.mode(context) == 1) stored.filterKeys { it !in validKeys } else emptyMap()
+        val batch = PhotoRules.nextUnanalyzed(all, completed.keys, limit)
         var unreadable = 0
         var cacheWarning = false
         var labeler: ImageLabeler? = null
-        progress(ScanProgress(0, all.size))
+        progress(ScanProgress(completed.size, all.size))
         try {
-            for ((index, meta) in all.withIndex()) {
+            for (meta in batch) {
                 currentCoroutineContext().ensureActive()
-                val key = "${meta.id}:${meta.modified}"
-                var analysis = old[key]
-                if (analysis == null) {
-                    try {
-                        val activeLabeler = labeler ?: ImageLabeling.getClient(
-                            ImageLabelerOptions.Builder().setConfidenceThreshold(0.7f).build()).also { labeler = it }
-                        analysis = analyze(meta, activeLabeler)
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (_: Exception) {
-                        // Retry on the next scan; a broken image must not poison the cache.
-                        unreadable++
-                    }
+                try {
+                    val activeLabeler = labeler ?: ImageLabeling.getClient(
+                        ImageLabelerOptions.Builder().setConfidenceThreshold(0.7f).build()).also { labeler = it }
+                    completed[PhotoRules.analysisKey(meta)] = analyze(meta, activeLabeler)
+                    // Each completed photo survives an error or interruption in the next one.
+                    cacheWarning = !cache.write(hidden + completed) || cacheWarning
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // Failed entries remain eligible for the next batch.
+                    unreadable++
                 }
-                if (analysis != null) next[key] = analysis
-                photos.add(Photo(meta, analysis, emptySet()))
-                if (index % 5 == 0 || index == all.lastIndex) progress(ScanProgress(index + 1, all.size))
-                if ((index + 1) % 100 == 0) {
-                    // Keep still-unprocessed entries when checkpointing; final write prunes stale entries.
-                    cacheWarning = !cache.write(old + next) || cacheWarning
-                }
+                progress(ScanProgress(completed.size, all.size))
             }
             currentCoroutineContext().ensureActive()
-            ScanResult(PhotoRules.classify(photos), unreadable, cacheWarning)
+            val photos = all.mapNotNull { meta ->
+                completed[PhotoRules.analysisKey(meta)]?.let { Photo(meta, it, emptySet()) }
+            }
+            ScanResult(PhotoRules.classify(photos), unreadable, cacheWarning, ScanProgress(completed.size, all.size))
         } finally {
-            labeler?.close()
-            cacheWarning = !cache.write(next + old.filterKeys { key ->
-                // Preserve entries not reached on cancellation, but discard removed/modified media.
-                key in validKeys
-            }.filterKeys { it !in next }) || cacheWarning
+            try { labeler?.close() } finally {
+                cacheWarning = !cache.write(hidden + completed) || cacheWarning
+            }
         }.let { it.copy(cacheWarning = cacheWarning) }
     }
 

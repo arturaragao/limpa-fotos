@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Limpa Fotos</string>
+    <string name="settings">Configurações</string>
+    <string name="analysis_limit">Analisar até N fotos</string>
+    <string name="batch_explanation">Por lote, apenas as fotos mais recentes ainda não analisadas. Os resultados anteriores ficam salvos neste aparelho.</string>
+    <string name="analysis_summary">%1$d de %2$d fotos analisadas\n%3$s que dá para liberar</string>
+    <string name="analyze_more">Analisar mais %1$d</string>
+    <string name="check_new_photos">Verificar novas fotos</string>
+    <string name="partial_access">Acesso parcial: só fotos permitidas. Abrir Configurações ›</string>
+    <string name="no_access">Permita o acesso em Configurações ›</string>
+    <string name="access_permissions">Permissões de acesso</string>
+    <string name="app_version">Versão %1$s</string>
+    <string name="save">Salvar</string>
+    <string name="invalid_limit">Informe um número inteiro maior que zero.</string>
     <string name="widget_name">Limpar fotos</string>
     <string name="widget_description">Abra o Limpa Fotos para revisar e limpar sua galeria.</string>
 </resources>
