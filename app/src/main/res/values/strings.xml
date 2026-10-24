@@ -6,6 +6,8 @@
     <string name="batch_explanation">Por lote, apenas as fotos mais recentes ainda não analisadas. Os resultados anteriores ficam salvos neste aparelho.</string>
     <string name="analysis_summary">%1$d de %2$d fotos analisadas\n%3$s que dá para liberar</string>
     <string name="analyze_more">Analisar mais %1$d</string>
+    <string name="analyze_first">Testar com as %1$d fotos mais recentes</string>
+    <string name="stop_analysis">Parar (o que já foi analisado fica salvo)</string>
     <string name="check_new_photos">Verificar novas fotos</string>
     <string name="partial_access">Acesso parcial: só fotos permitidas. Abrir Configurações ›</string>
     <string name="no_access">Permita o acesso em Configurações ›</string>

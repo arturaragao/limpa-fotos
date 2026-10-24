@@ -55,7 +55,8 @@ class MainActivity : ComponentActivity() {
 
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         accessMode = MediaAccess.mode(this)
-        if (accessMode > 0) model.scan(analyzeMore = !model.state.value.scanned) else {
+        // Ao abrir só mostra o que já está no cache; analisar fotos novas é sempre um toque do Artur.
+        if (accessMode > 0) model.scan(analyzeMore = false) else {
             model.clearAccess()
             model.message("Autorize o acesso às fotos. Se o Android não perguntar novamente, use Configurações do app.")
         }
@@ -93,7 +94,7 @@ class MainActivity : ComponentActivity() {
         if (mode == 0) {
             if (accessMode != mode) model.clearAccess()
         } else if ((accessMode >= 0 && accessMode != mode) || !model.state.value.scanned) {
-            if (!trashPending) model.scan(analyzeMore = !model.state.value.scanned)
+            if (!trashPending) model.scan(analyzeMore = false)
         }
         accessMode = mode
         render(model.state.value)
@@ -150,7 +151,7 @@ class MainActivity : ComponentActivity() {
         status = text("", 13f, R.color.secondary).apply { setPadding(0, dp(12), 0, dp(8)) }
         root.addView(status)
 
-        rescan = action("") { model.scan() }.apply {
+        rescan = action("") { if (model.state.value.scanning) model.stop() else model.scan() }.apply {
             setTextColor(getColor(R.color.on_accent))
             backgroundTintList = ColorStateList.valueOf(getColor(R.color.accent))
             setTypeface(typeface, Typeface.BOLD)
@@ -214,15 +215,21 @@ class MainActivity : ComponentActivity() {
         val counts = state.progress ?: ScanProgress(0, 0)
         val reclaimable = state.photos.filter(PhotoRules::initiallySelected).sumOf { it.meta.bytes }
         summary.text = getString(R.string.analysis_summary, counts.done, counts.total, PhotoRules.formatMb(reclaimable))
-        status.text = if (state.scanning) "Analisando este lote…" else state.message
+        status.text = if (state.scanning) state.progress?.takeIf { it.batchSize > 0 }
+            ?.let { "Analisando ${it.batchDone} de ${it.batchSize} deste lote…" } ?: "Lendo a galeria…" else state.message
         accessNotice.visibility = if (mode < 2) View.VISIBLE else View.GONE
         accessNotice.text = getString(if (mode == 1) R.string.partial_access else R.string.no_access)
         progress.visibility = if (state.scanning) View.VISIBLE else View.GONE
-        progress.isIndeterminate = state.progress == null
-        state.progress?.let { progress.max = it.total.coerceAtLeast(1); progress.progress = it.done }
+        progress.isIndeterminate = (state.progress?.batchSize ?: 0) == 0
+        state.progress?.let { progress.max = it.batchSize.coerceAtLeast(1); progress.progress = it.batchDone }
         val complete = state.scanned && counts.done == counts.total
-        rescan.text = if (complete) getString(R.string.check_new_photos) else getString(R.string.analyze_more, state.batchLimit)
-        rescan.isEnabled = mode > 0 && !state.scanning && !trashPending
+        rescan.text = when {
+            state.scanning -> getString(R.string.stop_analysis)
+            complete -> getString(R.string.check_new_photos)
+            counts.done == 0 -> getString(R.string.analyze_first, state.batchLimit)
+            else -> getString(R.string.analyze_more, state.batchLimit)
+        }
+        rescan.isEnabled = mode > 0 && !trashPending
         rescan.alpha = if (rescan.isEnabled) 1f else 0.5f
         if (state.photos !== lastPhotos || state.category != lastCategory) {
             for ((category, chip) in chips) {

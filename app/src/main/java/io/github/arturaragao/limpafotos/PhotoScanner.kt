@@ -49,7 +49,8 @@ object MediaAccess {
 
 fun photoUri(id: Long): Uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
 
-data class ScanProgress(val done: Int, val total: Int)
+/** done/total = galeria inteira; batchDone/batchSize = só o lote desta rodada. */
+data class ScanProgress(val done: Int, val total: Int, val batchDone: Int = 0, val batchSize: Int = 0)
 data class ScanResult(val photos: List<Photo>, val unreadable: Int, val cacheWarning: Boolean,
     val progress: ScanProgress)
 
@@ -89,7 +90,8 @@ class PhotoScanner(private val context: Context) {
         var unreadable = 0
         var cacheWarning = false
         var labeler: ImageLabeler? = null
-        progress(ScanProgress(completed.size, all.size))
+        var batchDone = 0
+        progress(ScanProgress(completed.size, all.size, 0, batch.size))
         try {
             for (meta in batch) {
                 currentCoroutineContext().ensureActive()
@@ -105,7 +107,8 @@ class PhotoScanner(private val context: Context) {
                     // Failed entries remain eligible for the next batch.
                     unreadable++
                 }
-                progress(ScanProgress(completed.size, all.size))
+                batchDone++
+                progress(ScanProgress(completed.size, all.size, batchDone, batch.size))
             }
             currentCoroutineContext().ensureActive()
             val photos = all.mapNotNull { meta ->

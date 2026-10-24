@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -58,12 +59,22 @@ class CleanViewModel(application: Application) : AndroidViewModel(application) {
                         })
                 }
             } catch (cancelled: CancellationException) {
+                mutable.update { it.copy(scanning = false) }
                 throw cancelled
             } catch (_: SecurityException) {
                 clearAccess()
             } catch (error: Exception) {
                 mutable.update { it.copy(scanning = false, message = error.message ?: "Não foi possível varrer a galeria.") }
             }
+        }
+    }
+
+    /** Para no meio do lote: o que já foi analisado fica no cache e aparece na tela. */
+    fun stop() {
+        val job = scanJob ?: return
+        viewModelScope.launch {
+            job.cancelAndJoin()
+            scan(analyzeMore = false)
         }
     }
 
