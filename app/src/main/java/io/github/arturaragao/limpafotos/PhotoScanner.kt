@@ -54,7 +54,7 @@ object MediaAccess {
 
 fun photoUri(id: Long): Uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
 
-/** done/total = galeria inteira; batchDone/batchSize = só o lote desta rodada. */
+/** done/total = galeria acessível sem mantidas; batchDone/batchSize = lote desta rodada. */
 data class ScanProgress(val done: Int, val total: Int, val batchDone: Int = 0, val batchSize: Int = 0)
 data class ScanResult(val photos: List<Photo>, val unreadable: Int, val cacheWarning: Boolean,
     val progress: ScanProgress)

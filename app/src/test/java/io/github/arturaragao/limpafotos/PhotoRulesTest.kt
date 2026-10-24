@@ -248,6 +248,21 @@ class PhotoRulesTest {
         assertTrue(Category.DOCUMENTS in PhotoRules.classify(listOf(document)).single().categories)
     }
 
+    @Test fun partialAccessDisappearanceCannotBeCountedAsDeletion() {
+        val flow = PhotoRules.openGooglePhoto(PhotoRules.startGooglePhotos(listOf(1)))
+        val hidden = PhotoRules.mediaPresence(fullAccess = false, rowFound = false)
+        val pending = PhotoRules.returnedFromGooglePhotos(flow, hidden)
+        assertEquals(MediaPresence.UNKNOWN, hidden)
+        assertEquals(0, pending.deleted)
+        assertFalse(pending.finished)
+        assertTrue(pending.needsDecision)
+        assertEquals(MediaPresence.MISSING, PhotoRules.mediaPresence(fullAccess = true, rowFound = false))
+        for (full in listOf(true, false)) {
+            assertEquals(MediaPresence.EXISTS, PhotoRules.mediaPresence(full, rowFound = true))
+            assertEquals(MediaPresence.MISSING, PhotoRules.mediaPresence(full, rowFound = true, trashed = true))
+        }
+    }
+
     @Test fun googleFlowDeduplicatesQueueAndCountsOnlyConfirmedDisappearances() {
         val start = PhotoRules.startGooglePhotos(listOf(5, 5, 8))
         assertEquals(listOf(5L, 8L), start.ids)

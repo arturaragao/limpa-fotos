@@ -88,10 +88,9 @@ Hamming, agrupamento e limites, favoritos, metadados, Laplaciano/limiar, MB e
 UpdateVersion. Ambiente informado tem só Java 8 e não tem SDK: o build Android
 e os testes Gradle dependem do CI e ainda não foram executados aqui.
 
-Pendência de requisito conflitante: solicitado RecyclerView, mas ele não está
-no modelo, e novas dependências de UI foram proibidas. Foi perguntada autorização;
-enquanto não houver resposta, usa-se GridView nativa com reciclagem de views.
-Visual usa Theme.Material nativo, cores claras/escuras e cartões arredondados.
+Grade em GridView nativa com reciclagem de views, respeitando a proibição de
+novas bibliotecas de UI/imagem. Visual usa Theme.Material nativo, cores
+claras/escuras e cartões arredondados.
 
 Revisar em aparelho: permissões Android 11/13/14+ (incluindo acesso parcial),
 seleção, confirmação/cancelamento/restauração da lixeira, desempenho na primeira

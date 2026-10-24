@@ -41,6 +41,7 @@ class PhotoActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        actionBar?.hide()
         store = ReviewSessionStore(this)
         session = try { store.read() } catch (_: Exception) { finish(); return }
         if (session.index !in session.photos.indices) { finish(); return }

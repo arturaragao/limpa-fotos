@@ -89,6 +89,11 @@ object PhotoRules {
     fun filterKept(photos: List<Photo>, keptIds: Set<Long>): List<Photo> = photos.filter { it.meta.id !in keptIds }
 
     fun startGooglePhotos(ids: List<Long>) = GooglePhotosFlow(ids.distinct())
+    fun mediaPresence(fullAccess: Boolean, rowFound: Boolean, trashed: Boolean = false): MediaPresence = when {
+        rowFound -> if (trashed) MediaPresence.MISSING else MediaPresence.EXISTS
+        fullAccess -> MediaPresence.MISSING
+        else -> MediaPresence.UNKNOWN
+    }
     fun openGooglePhoto(flow: GooglePhotosFlow): GooglePhotosFlow =
         if (flow.finished || flow.awaitingReturn || flow.needsDecision) flow else flow.copy(awaitingReturn = true)
     fun returnedFromGooglePhotos(flow: GooglePhotosFlow, presence: MediaPresence): GooglePhotosFlow {

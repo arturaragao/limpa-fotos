@@ -71,6 +71,7 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
                             deletionSummary?.let { append(" $it") }
                         })
                 }
+                deletionSummary = null
             } catch (cancelled: CancellationException) {
                 mutable.update { it.copy(scanning = false) }
                 throw cancelled
@@ -175,12 +176,9 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
                     val args = Bundle().apply { putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE) }
                     context.contentResolver.query(photoUri(id), arrayOf(MediaStore.Images.Media.IS_TRASHED), args, null)
                         ?.use { cursor ->
-                            when {
-                                cursor.moveToFirst() -> if (cursor.getInt(0) == 1) MediaPresence.MISSING else MediaPresence.EXISTS
-                                // Partial permission loss must never be counted as deletion.
-                                mode == 2 -> MediaPresence.MISSING
-                                else -> MediaPresence.UNKNOWN
-                            }
+                            val found = cursor.moveToFirst()
+                            PhotoRules.mediaPresence(fullAccess = mode == 2, rowFound = found,
+                                trashed = found && cursor.getInt(0) == 1)
                         } ?: MediaPresence.UNKNOWN
                 }
             } catch (_: Exception) { MediaPresence.UNKNOWN }
