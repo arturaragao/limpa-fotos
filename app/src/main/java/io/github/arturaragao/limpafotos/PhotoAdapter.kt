@@ -90,8 +90,10 @@ class PhotoAdapter(
                 append(PhotoRules.formatMb(photo.meta.bytes))
             }
             root.contentDescription = "${photo.meta.name}, ${caption.text}, ${if (checked) "marcada" else "desmarcada"}"
-            root.setOnClickListener { if (enabled) toggle(photo.meta.id) }
-            root.setOnLongClickListener { preview(photo); true }
+            root.setOnClickListener { if (enabled) preview(photo) }
+            check.contentDescription = if (checked) "Desmarcar e manter ${photo.meta.name}" else "Marcar ${photo.meta.name}"
+            check.setOnClickListener { if (enabled) toggle(photo.meta.id) }
+            root.setOnLongClickListener { if (enabled) preview(photo); true }
             val key = "${photo.meta.id}:${photo.meta.modified}"
             if (bound == key) return
             bound = key

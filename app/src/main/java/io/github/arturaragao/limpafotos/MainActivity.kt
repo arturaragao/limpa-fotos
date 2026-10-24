@@ -3,6 +3,8 @@ package io.github.arturaragao.limpafotos
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -35,6 +37,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 
 class MainActivity : ComponentActivity() {
     private val model: CleanViewModel by viewModels()
@@ -45,6 +48,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var quantity: EditText
     private lateinit var reminder: Button
     private lateinit var trash: Button
+    private lateinit var localTrash: Button
+    private lateinit var googleActions: LinearLayout
+    private lateinit var googleSkip: Button
+    private lateinit var googleRetry: Button
     private lateinit var progress: ProgressBar
     private lateinit var empty: TextView
     private lateinit var adapter: PhotoAdapter
@@ -53,6 +60,11 @@ class MainActivity : ComponentActivity() {
     private var lastCategory: Category? = null
     private var accessMode = -1
     private var trashPending = false
+    private var checkingGoogle = false
+
+    private val reviewRequest = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        model.refreshReviewSelection()
+    }
 
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         accessMode = MediaAccess.mode(this)
@@ -102,6 +114,16 @@ class MainActivity : ComponentActivity() {
         updateReminderButton()
         Updater.checkOnOpen(this, intent.getBooleanExtra(Updater.EXTRA, false))
         intent.removeExtra(Updater.EXTRA)
+        if (model.state.value.googleFlow != null && !checkingGoogle) {
+            checkingGoogle = true
+            lifecycleScope.launch {
+                try {
+                    yield() // Let onResume finish before opening another activity.
+                    model.checkGoogleReturn()
+                    if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) driveGooglePhotos()
+                } finally { checkingGoogle = false; render(model.state.value) }
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -203,9 +225,15 @@ class MainActivity : ComponentActivity() {
         scroll.addView(categories)
         root.addView(scroll)
 
-        root.addView(text("Toque para marcar • segure para ver a foto", 12f, R.color.secondary).apply { setPadding(0, 0, 0, dp(8)) })
+        root.addView(text("Toque para ampliar • toque no ✓ para manter", 12f, R.color.secondary).apply { setPadding(0, 0, 0, dp(8)) })
         adapter = PhotoAdapter(this, lifecycleScope, model::toggle) { photo ->
-            startActivity(Intent(this, PhotoActivity::class.java).putExtra("photoId", photo.meta.id).putExtra("name", photo.meta.name))
+            val state = model.state.value
+            val visible = if (state.category == null) state.photos else state.photos.filter { state.category in it.categories }
+            try {
+                ReviewSessionStore(this).write(ReviewSession(visible.map { ReviewPhoto(it.meta.id, it.meta.name) },
+                    state.selected, visible.indexOfFirst { it.meta.id == photo.meta.id }))
+                reviewRequest.launch(Intent(this, PhotoActivity::class.java))
+            } catch (_: Exception) { model.message("Não foi possível abrir a foto. Tente novamente.") }
         }
         val grid = GridView(this).apply {
             numColumns = GridView.AUTO_FIT
@@ -220,28 +248,41 @@ class MainActivity : ComponentActivity() {
         empty = text("", 16f).apply { gravity = Gravity.CENTER; setPadding(dp(12), dp(8), dp(12), dp(8)) }
         root.addView(empty, LinearLayout.LayoutParams(-1, -2))
         root.addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
-        trash = action("Mover 0 para a lixeira (0,0 MB)") { moveToTrash() }.apply {
+        trash = action("Apagar no Google Fotos") { confirmGooglePhotos() }.apply {
             minHeight = dp(56)
             setTextColor(getColor(R.color.on_accent))
             backgroundTintList = ColorStateList.valueOf(getColor(R.color.accent))
         }
         root.addView(trash, LinearLayout.LayoutParams(-1, -2))
-        root.addView(text("Lixeira do Android: restaure em até 30 dias.\nA seleção vale para todas as categorias, sem contar fotos duas vezes.", 11f, R.color.secondary)
+        localTrash = action("Lixeira só do celular") { moveToTrash() }
+        root.addView(localTrash, LinearLayout.LayoutParams(-1, -2))
+        googleActions = LinearLayout(this).apply { visibility = View.GONE }
+        googleSkip = action("Pular") { model.skipGooglePhoto(); driveGooglePhotos() }
+        googleRetry = action("Tentar de novo") { model.retryGooglePhoto(); driveGooglePhotos() }
+        googleActions.addView(googleSkip, LinearLayout.LayoutParams(0, -2, 1f))
+        googleActions.addView(googleRetry, LinearLayout.LayoutParams(0, -2, 1f))
+        googleActions.addView(action("Encerrar") { model.finishGooglePhotos() }, LinearLayout.LayoutParams(0, -2, 1f))
+        root.addView(googleActions, LinearLayout.LayoutParams(-1, -2))
+        root.addView(text("Google Fotos: toque na lixeira lá e volte aqui para continuar.\nLixeira só do celular: a cópia na nuvem pode continuar lá.", 11f, R.color.secondary)
             .apply { gravity = Gravity.CENTER; setPadding(0, dp(6), 0, 0) })
     }
 
     private fun render(state: CleanState) {
         val mode = MediaAccess.mode(this)
+        val flow = state.googleFlow
+        val busy = trashPending || flow != null
         val counts = state.progress ?: ScanProgress(0, 0)
         val reclaimable = state.photos.filter(PhotoRules::initiallySelected).sumOf { it.meta.bytes }
         summary.text = getString(R.string.analysis_summary, counts.done, counts.total, PhotoRules.formatMb(reclaimable))
         status.text = if (state.scanning) state.progress?.takeIf { it.batchSize > 0 }
             ?.let { "Analisando ${it.batchDone} de ${it.batchSize} deste lote…" } ?: "Lendo a galeria…" else state.message
+        if (flow != null) status.text = "Google Fotos • ${flow.progressText} • ${flow.deleted} apagadas\n${state.message}"
         accessNotice.visibility = if (mode < 2) View.VISIBLE else View.GONE
         accessNotice.text = getString(if (mode == 1) R.string.partial_access else R.string.no_access)
-        progress.visibility = if (state.scanning) View.VISIBLE else View.GONE
+        progress.visibility = if (state.scanning || flow != null) View.VISIBLE else View.GONE
         progress.isIndeterminate = (state.progress?.batchSize ?: 0) == 0
         state.progress?.let { progress.max = it.batchSize.coerceAtLeast(1); progress.progress = it.batchDone }
+        if (flow != null) { progress.isIndeterminate = false; progress.max = flow.ids.size; progress.progress = flow.index }
         val complete = state.scanned && counts.done == counts.total
         rescan.text = when {
             state.scanning -> getString(R.string.stop_analysis)
@@ -249,7 +290,7 @@ class MainActivity : ComponentActivity() {
             counts.done == 0 -> getString(R.string.analyze_first)
             else -> getString(R.string.analyze_more)
         }
-        rescan.isEnabled = mode > 0 && !trashPending
+        rescan.isEnabled = mode > 0 && !busy
         quantity.visibility = if (state.scanning || complete) View.GONE else View.VISIBLE
         if (!quantity.hasFocus() && quantity.text.toString() != state.batchLimit.toString())
             quantity.setText(state.batchLimit.toString())
@@ -270,11 +311,16 @@ class MainActivity : ComponentActivity() {
         } else adapter.selection(state.selected)
         empty.text = if (state.scanning) "Analisando este lote de fotos." else if (state.scanned)
             "Nenhuma sugestão nesta categoria entre as fotos analisadas." else "Sua galeria será analisada aqui."
-        adapter.enabled = !state.scanning && !trashPending
+        adapter.enabled = !state.scanning && !busy
         val selected = state.photos.filter { it.meta.id in state.selected }
-        trash.text = "Mover ${selected.size} para a lixeira (${PhotoRules.formatMb(selected.sumOf { it.meta.bytes })})"
-        trash.isEnabled = selected.isNotEmpty() && !state.scanning && !trashPending && mode > 0
+        trash.text = "Apagar ${selected.size} no Google Fotos (${PhotoRules.formatMb(selected.sumOf { it.meta.bytes })})"
+        trash.isEnabled = selected.isNotEmpty() && !state.scanning && !busy && mode > 0
         trash.alpha = if (trash.isEnabled) 1f else 0.5f
+        localTrash.isEnabled = trash.isEnabled
+        localTrash.alpha = trash.alpha
+        googleActions.visibility = if (flow != null) View.VISIBLE else View.GONE
+        googleSkip.isEnabled = flow?.needsDecision == true && !checkingGoogle
+        googleRetry.isEnabled = googleSkip.isEnabled
     }
 
     private fun showSettings() {
@@ -296,8 +342,11 @@ class MainActivity : ComponentActivity() {
         content.addView(limit, LinearLayout.LayoutParams(-1, dp(56)))
         content.addView(text(getString(R.string.batch_explanation), 13f, R.color.secondary))
         val permissions = action(getString(R.string.access_permissions)) { }
-        permissions.isEnabled = !model.state.value.scanning && !trashPending
+        permissions.isEnabled = !model.state.value.scanning && !trashPending && model.state.value.googleFlow == null
         content.addView(permissions, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(16) })
+        content.addView(action("Mostrar de novo as que mantive") { model.showKeptAgain() }.apply {
+            isEnabled = !model.state.value.scanning && !trashPending && model.state.value.googleFlow == null
+        }, LinearLayout.LayoutParams(-1, -2))
         @Suppress("DEPRECATION")
         val version = packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
         content.addView(text(getString(R.string.app_version, version), 13f, R.color.secondary).apply {
@@ -332,10 +381,38 @@ class MainActivity : ComponentActivity() {
         dialog.show()
     }
 
-    private fun moveToTrash() {
+    private fun confirmGooglePhotos() {
         val state = model.state.value
-        if (state.scanning || trashPending) return
-        val uris = state.photos.filter { it.meta.id in state.selected }.map { photoUri(it.meta.id) }.distinct()
+        if (state.scanning || trashPending || state.googleFlow != null || state.selected.isEmpty()) return
+        AlertDialog.Builder(this).setTitle("Apagar no Google Fotos")
+            .setMessage("Abra cada foto, toque na lixeira do Google Fotos e confirme lá. Ao voltar, a próxima abre automaticamente. Para apagar também da nuvem, use a lixeira do Google Fotos, não ‘Excluir do dispositivo’.")
+            .setPositiveButton("Começar") { _, _ -> model.beginGooglePhotos(); driveGooglePhotos() }
+            .setNegativeButton(android.R.string.cancel, null).show()
+    }
+
+    private fun driveGooglePhotos() {
+        val flow = model.state.value.googleFlow ?: return
+        if (flow.finished) { model.finishGooglePhotos(); return }
+        if (flow.awaitingReturn || flow.needsDecision) { render(model.state.value); return }
+        val uri = photoUri(flow.currentId ?: return)
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "image/*")
+            .setPackage("com.google.android.apps.photos")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            .apply { clipData = ClipData.newRawUri("Foto selecionada", uri) }
+        model.googleOpened()
+        try { startActivity(view) }
+        catch (_: ActivityNotFoundException) {
+            val remaining = model.cancelGoogleForLocal()
+            model.message("Google Fotos indisponível. A confirmação abaixo move apenas para a lixeira do celular.")
+            moveToTrash(remaining)
+        } catch (_: Exception) { model.googleFailed() }
+        render(model.state.value)
+    }
+
+    private fun moveToTrash(ids: List<Long>? = null) {
+        val state = model.state.value
+        if (state.scanning || trashPending || state.googleFlow != null) return
+        val uris = (ids ?: state.photos.filter { it.meta.id in state.selected }.map { it.meta.id }).map(::photoUri).distinct()
         if (uris.isEmpty()) return
         try {
             // The only write to the gallery. No delete(), resolver.update() or automatic approval.

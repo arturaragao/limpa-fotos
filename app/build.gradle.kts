@@ -14,8 +14,8 @@ android {
         applicationId = "io.github.arturaragao.limpafotos"
         minSdk = 30
         targetSdk = 35
-        versionCode = providers.gradleProperty("versionCode").orElse("1").get().toInt()
-        versionName = providers.gradleProperty("versionName").orElse("0.1.1").get()
+        versionCode = providers.gradleProperty("versionCode").orElse("2").get().toInt()
+        versionName = providers.gradleProperty("versionName").orElse("0.1.2").get()
     }
     signingConfigs {
         if (canSignRelease) {
@@ -50,5 +50,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.google.mlkit:image-labeling:17.0.9")
+    implementation("com.google.mlkit:face-detection:16.1.7")
     testImplementation("junit:junit:4.13.2")
 }

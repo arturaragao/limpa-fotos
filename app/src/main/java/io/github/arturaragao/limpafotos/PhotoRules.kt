@@ -3,8 +3,8 @@ package io.github.arturaragao.limpafotos
 import java.util.Locale
 
 enum class Category(val title: String) {
-    PRINTS("Prints"), STICKERS("GIFs e figurinhas"), BLURRY("Borradas"),
-    DUPLICATES("Repetidas"), FOOD("Comida")
+    PRINTS("Prints"), DOCUMENTS("Documentos e papel"), STICKERS("Figurinhas"),
+    WHATSAPP("Lixo do WhatsApp"), BLURRY("Muito borradas"), DUPLICATES("Repetidas")
 }
 
 data class PhotoMeta(
@@ -21,9 +21,23 @@ data class PhotoMeta(
     val addedAt: Long = 0
 )
 
-/** cat = gato (Koda) na foto; plated = comida servida em prato/mesa (foto caprichada). */
-data class Analysis(val hash: Long, val sharpness: Double, val food: Boolean,
-    val cat: Boolean = false, val plated: Boolean = false)
+/** food/plated retained for callers; food no longer creates a category or suggestion. */
+data class Analysis(val hash: Long, val sharpness: Double, val food: Boolean = false,
+    val cat: Boolean = false, val plated: Boolean = false,
+    val hasFace: Boolean = false, val person: Boolean = false,
+    val document: Boolean = false, val whatsappJunk: Boolean = false)
+
+enum class MediaPresence { MISSING, EXISTS, UNKNOWN }
+
+/** Only a confirmed disappearance advances the deletion count. */
+data class GooglePhotosFlow(
+    val ids: List<Long>, val index: Int = 0, val deleted: Int = 0, val skipped: Int = 0,
+    val awaitingReturn: Boolean = false, val needsDecision: Boolean = false
+) {
+    val currentId: Long? get() = ids.getOrNull(index)
+    val finished: Boolean get() = index >= ids.size
+    val progressText: String get() = "${if (finished) ids.size else index + 1} de ${ids.size}"
+}
 
 data class Photo(
     val meta: PhotoMeta,
@@ -33,16 +47,17 @@ data class Photo(
 )
 
 object PhotoRules {
-    const val BLUR_THRESHOLD = 100.0
+    const val BLUR_THRESHOLD = 15.0
     const val DUPLICATE_DISTANCE = 6
     const val HOUR_MS = 3_600_000L
 
     fun analysisKey(meta: PhotoMeta): String = "${meta.id}:${meta.modified}"
 
     /** Cache hits never consume the batch. A changed file must be analyzed again. */
-    fun nextUnanalyzed(all: List<PhotoMeta>, analyzedKeys: Set<String>, limit: Int): List<PhotoMeta> {
+    fun nextUnanalyzed(all: List<PhotoMeta>, analyzedKeys: Set<String>, limit: Int,
+        keptIds: Set<Long> = emptySet()): List<PhotoMeta> {
         require(limit >= 0)
-        return all.asSequence().filter { analysisKey(it) !in analyzedKeys }
+        return all.asSequence().filter { it.id !in keptIds && analysisKey(it) !in analyzedKeys }
             .sortedWith(compareByDescending<PhotoMeta> { if (it.takenAt > 0) it.takenAt else it.addedAt }
                 .thenByDescending { it.id })
             .take(limit).toList()
@@ -50,22 +65,47 @@ object PhotoRules {
 
     fun metadataCategories(meta: PhotoMeta): Set<Category> = buildSet {
         val path = meta.path.lowercase(Locale.ROOT)
-        if (path.contains("screenshots") || path.contains("screen recordings") ||
-            meta.name.startsWith("Screenshot", ignoreCase = true)) add(Category.PRINTS)
-        if (meta.mime.equals("image/gif", true) || meta.mime.equals("image/webp", true) ||
-            path.contains("whatsapp stickers") || path.contains("animated gifs") ||
-            (meta.width in 1..511 || meta.height in 1..511)) add(Category.STICKERS)
+        if (path.contains("screenshots") || meta.name.startsWith("Screenshot", ignoreCase = true) ||
+            meta.name.startsWith("Captura de tela", ignoreCase = true)) add(Category.PRINTS)
+        val stickerWebp = meta.mime.equals("image/webp", true) && meta.width in 1..512 && meta.width == meta.height
+        if (stickerWebp || path.contains("whatsapp stickers")) add(Category.STICKERS)
     }
 
-    /** Rótulos do ML Kit que indicam prato servido/mesa posta. */
-    val PLATED_LABELS = setOf("tableware", "cutlery", "plate", "dish", "cuisine", "meal",
-        "lunch", "dinner", "brunch", "restaurant", "dessert", "wine")
+    private val PERSON_LABELS = setOf("person", "people", "selfie", "face", "portrait", "human",
+        "baby", "child", "boy", "girl", "man", "woman", "bride", "groom", "crowd",
+        "human body", "skin", "hair", "hand", "arm", "leg", "facial hair", "beard", "smile")
+    fun hasPersonLabel(labels: List<Pair<String, Float>>): Boolean = labels.any {
+        it.first.lowercase(Locale.ROOT) in PERSON_LABELS && it.second >= 0.4f
+    }
+    fun hasDocumentLabel(labels: List<Pair<String, Float>>): Boolean = labels.any {
+        it.first.lowercase(Locale.ROOT) in setOf("document", "paper", "receipt") && it.second >= 0.9f
+    }
+    fun hasJunkLabel(labels: List<Pair<String, Float>>): Boolean = labels.any {
+        it.first.lowercase(Locale.ROOT) in setOf("comics", "comic book", "poster", "font") && it.second >= 0.95f
+    }
+    fun excludedByPerson(analysis: Analysis?): Boolean =
+        analysis == null || analysis.hasFace || analysis.person
 
-    fun isWhatsApp(meta: PhotoMeta): Boolean = meta.path.contains("whatsapp", ignoreCase = true)
+    fun filterKept(photos: List<Photo>, keptIds: Set<Long>): List<Photo> = photos.filter { it.meta.id !in keptIds }
 
-    /** Comida bonita (prato servido, nítida, fora do WhatsApp) fica; comida aleatória, borrada ou de WhatsApp vira sugestão. */
-    fun foodToDelete(meta: PhotoMeta, a: Analysis): Boolean =
-        a.food && !(a.plated && !isBlurry(a.sharpness) && !isWhatsApp(meta))
+    fun startGooglePhotos(ids: List<Long>) = GooglePhotosFlow(ids.distinct())
+    fun mediaPresence(fullAccess: Boolean, rowFound: Boolean, trashed: Boolean = false): MediaPresence = when {
+        rowFound -> if (trashed) MediaPresence.MISSING else MediaPresence.EXISTS
+        fullAccess -> MediaPresence.MISSING
+        else -> MediaPresence.UNKNOWN
+    }
+    fun openGooglePhoto(flow: GooglePhotosFlow): GooglePhotosFlow =
+        if (flow.finished || flow.awaitingReturn || flow.needsDecision) flow else flow.copy(awaitingReturn = true)
+    fun returnedFromGooglePhotos(flow: GooglePhotosFlow, presence: MediaPresence): GooglePhotosFlow {
+        if (flow.finished || !flow.awaitingReturn) return flow
+        return if (presence == MediaPresence.MISSING)
+            flow.copy(index = flow.index + 1, deleted = flow.deleted + 1, awaitingReturn = false)
+        else flow.copy(awaitingReturn = false, needsDecision = true)
+    }
+    fun skipGooglePhoto(flow: GooglePhotosFlow): GooglePhotosFlow =
+        if (!flow.needsDecision || flow.finished) flow else flow.copy(index = flow.index + 1,
+            skipped = flow.skipped + 1, needsDecision = false)
+    fun retryGooglePhoto(flow: GooglePhotosFlow): GooglePhotosFlow = flow.copy(needsDecision = false)
 
     fun isBlurry(variance: Double): Boolean = variance.isFinite() && variance >= 0 && variance < BLUR_THRESHOLD
     fun hamming(a: Long, b: Long): Int = java.lang.Long.bitCount(a xor b)
@@ -83,7 +123,7 @@ object PhotoRules {
             val bits = if (band == 6) 10 else 9
             band to ((hash ushr (band * 9)) and ((1L shl bits) - 1))
         }
-        for (photo in photos.filter { it.analysis != null && it.meta.takenAt > 0 }
+        for (photo in photos.filter { !excludedByPerson(it.analysis) && it.meta.takenAt > 0 }
             .sortedWith(compareBy<Photo> { it.meta.takenAt }.thenBy { it.meta.id })) {
             while (active.isNotEmpty() && photo.meta.takenAt - groups[active.first].first().meta.takenAt > HOUR_MS) {
                 val expired = active.removeFirst()
@@ -113,20 +153,24 @@ object PhotoRules {
         return groups.filter { it.size > 1 }
     }
 
-    fun classify(photos: List<Photo>): List<Photo> {
+    fun classify(photos: List<Photo>, keptIds: Set<Long> = emptySet()): List<Photo> {
+        val eligible = filterKept(photos, keptIds).filter { !excludedByPerson(it.analysis) }
         val duplicated = mutableSetOf<Long>()
         val keepers = mutableSetOf<Long>()
-        for (group in duplicateGroups(photos)) {
+        for (group in duplicateGroups(eligible)) {
             duplicated.addAll(group.map { it.meta.id })
             val best = group.maxWithOrNull(compareBy<Photo> { it.meta.width.toLong() * it.meta.height }
                 .thenBy { it.analysis?.sharpness ?: 0.0 }.thenBy { it.meta.bytes }.thenBy { -it.meta.id })!!
             keepers.add(best.meta.id)
         }
-        return photos.map { photo ->
+        return eligible.map { photo ->
             val categories = metadataCategories(photo.meta).toMutableSet()
             photo.analysis?.let {
                 if (isBlurry(it.sharpness)) categories.add(Category.BLURRY)
-                if (foodToDelete(photo.meta, it)) categories.add(Category.FOOD)
+                if (it.document) categories.add(Category.DOCUMENTS)
+                val path = photo.meta.path.lowercase(Locale.ROOT)
+                if (it.whatsappJunk && path.contains("whatsapp images/") && !path.contains("/sent/"))
+                    categories.add(Category.WHATSAPP)
             }
             if (photo.meta.id in duplicated) categories.add(Category.DUPLICATES)
             photo.copy(categories = categories, keeper = photo.meta.id in keepers)
@@ -135,7 +179,7 @@ object PhotoRules {
 
     fun initiallySelected(photo: Photo): Boolean {
         // Fotos do Koda (gato) nunca são sugeridas.
-        if (photo.analysis?.cat == true) return false
+        if (excludedByPerson(photo.analysis) || photo.analysis?.cat == true) return false
         if (photo.meta.path.startsWith("DCIM/Camera/", ignoreCase = true) &&
             photo.categories == setOf(Category.BLURRY)) return false
         return photo.categories.isNotEmpty() && !photo.meta.favorite && !photo.keeper
