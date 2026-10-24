@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Limpa Fotos</string>
+    <string name="widget_name">Limpar fotos</string>
+    <string name="widget_description">Abra o Limpa Fotos para revisar e limpar sua galeria.</string>
+</resources>

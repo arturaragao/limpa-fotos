@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Deny all other HTTPS destinations, including ML Kit diagnostic uploads. -->
+    <base-config cleartextTrafficPermitted="false"><trust-anchors /></base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain>api.github.com</domain>
+        <domain>github.com</domain>
+        <domain>release-assets.githubusercontent.com</domain>
+        <domain>objects.githubusercontent.com</domain>
+        <trust-anchors><certificates src="system" /></trust-anchors>
+    </domain-config>
+</network-security-config>
