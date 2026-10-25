@@ -107,6 +107,11 @@ eventuais mudanças nos hosts de download do GitHub.
 
 ## Histórico
 
+- 24/10/2026 (noite 9): 400 fotos sem nenhuma sugestão. Causa: rótulos de partes do corpo (mão, pele, cabelo, sorriso)
+  a 0,40 e qualquer rosto excluíam quase tudo, inclusive prints com avatar. Agora: rótulo de pessoa só os de gente, a 0,60;
+  print/figurinha só sai com rosto >= 20% da largura; cache v4 refaz do v3 só as entradas afetadas; mensagem final mostra
+  analisadas/sugeridas por categoria/puladas por pessoas. Testes de regressão em PhotoRulesTest.
+
 - 24/10/2026: 0.1.3 / code 3; nome Limpar Fotos, análise em segundo plano com
   WorkManager em primeiro plano (notificação dataSync), progresso reconectável,
   cancelamento e recarga do cache, permissão de notificações antes de analisar.
