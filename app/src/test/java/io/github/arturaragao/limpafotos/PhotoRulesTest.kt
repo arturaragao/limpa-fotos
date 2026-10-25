@@ -65,8 +65,7 @@ class PhotoRulesTest {
         val cached = photo(1, favorite = true)
         val newPhoto = photo(2, width = 1800)
         val results = PhotoRules.classify(listOf(cached, newPhoto))
-        assertTrue(results.all { Category.DUPLICATES in it.categories })
-        assertTrue(results.last().keeper)
+        assertTrue(results.none { Category.DUPLICATES in it.categories })
         assertTrue(results.none(PhotoRules::initiallySelected))
     }
 
@@ -143,7 +142,7 @@ class PhotoRulesTest {
         assertEquals(3L, classified.single { it.keeper }.meta.id)
         assertTrue(classified.all { Category.DUPLICATES in it.categories })
         assertFalse(PhotoRules.initiallySelected(classified.last()))
-        assertTrue(PhotoRules.initiallySelected(classified.first()))
+        assertFalse(PhotoRules.initiallySelected(classified.first())) // Prior alone does not suggest camera photos.
     }
 
     @Test fun favoritesAreNeverPremarkedInAnyCategory() {
@@ -179,9 +178,9 @@ class PhotoRulesTest {
         assertEquals(setOf(Category.BLURRY), classified.categories)
         assertFalse(PhotoRules.initiallySelected(classified))
         val elsewhere = classified.copy(meta = classified.meta.copy(path = "Pictures/Camera/"))
-        assertTrue(PhotoRules.initiallySelected(elsewhere))
+        assertFalse(PhotoRules.initiallySelected(elsewhere))
         val extra = classified.copy(categories = setOf(Category.BLURRY, Category.DUPLICATES))
-        assertTrue(PhotoRules.initiallySelected(extra))
+        assertFalse(PhotoRules.initiallySelected(extra))
     }
 
     @Test fun keptIdsAreExcludedFromEveryCategoryEvenAfterModification() {
@@ -211,7 +210,7 @@ class PhotoRulesTest {
 
     @Test fun facesAndPersonLabelsExcludeEveryCategoryIncludingDuplicates() {
         for (analysis in listOf(Analysis(0, 1.0, hasFace = true), Analysis(0, 1.0, person = true))) {
-            val person = Photo(meta(1, path = "WhatsApp/Media/WhatsApp Images/", name = "Screenshot.webp", mime = "image/webp"),
+            val person = Photo(meta(1, path = "DCIM/Camera/"),
                 analysis.copy(document = true, whatsappJunk = true), Category.entries.toSet())
             assertTrue(PhotoRules.classify(listOf(person)).isEmpty())
             assertFalse(PhotoRules.initiallySelected(person))
@@ -238,9 +237,9 @@ class PhotoRulesTest {
         assertFalse(PhotoRules.hasJunkLabel(listOf("Comics" to 0.94f)))
         val base = Photo(meta(path = "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/"),
             Analysis(0, 500.0), emptySet())
-        assertTrue(PhotoRules.classify(listOf(base)).single().categories.isEmpty())
+        assertEquals(setOf(Category.LEARNED), PhotoRules.classify(listOf(base)).single().categories)
         val junk = base.copy(analysis = base.analysis!!.copy(whatsappJunk = true))
-        assertEquals(setOf(Category.WHATSAPP), PhotoRules.classify(listOf(junk)).single().categories)
+        assertEquals(setOf(Category.WHATSAPP, Category.LEARNED), PhotoRules.classify(listOf(junk)).single().categories)
         for (path in listOf("DCIM/Camera/", "WhatsApp/Media/WhatsApp Images/Sent/")) {
             assertFalse(Category.WHATSAPP in PhotoRules.classify(listOf(junk.copy(meta = junk.meta.copy(path = path)))).single().categories)
         }
@@ -334,19 +333,20 @@ class PhotoRulesTest {
         val camera = meta()
         assertFalse(PhotoRules.faceExcludes(print, 0f))
         assertFalse(PhotoRules.faceExcludes(print, 0.04f))
-        assertTrue(PhotoRules.faceExcludes(print, 0.2f))
+        assertFalse(PhotoRules.faceExcludes(print, 0.8f))
         assertFalse(PhotoRules.faceExcludes(camera, 0f))
         assertTrue(PhotoRules.faceExcludes(camera, 0.01f))
     }
 
-    @Test fun oldCacheRedoesOnlyWhatOldPersonRulesMayHaveHidden() {
-        val print = meta(path = "Pictures/Screenshots/", name = "Screenshot_1.png")
-        val camera = meta()
-        val face = Analysis(0, Double.NaN, hasFace = true)
-        assertTrue(PhotoRules.staleV3(print, face))
-        assertFalse(PhotoRules.staleV3(camera, face))
-        assertTrue(PhotoRules.staleV3(camera, Analysis(1, 50.0, person = true)))
-        assertFalse(PhotoRules.staleV3(camera, Analysis(1, 50.0)))
+    @Test fun idDocumentsAreNormalizedWithoutBlockingBillsWithCpf() {
+        for (text in listOf("Carteira Nacional de Habilitação", "REGISTRO GERAL", "Carteira de identidade",
+            "Passaporte", "PASSPORT", "Carteira de Trabalho", "Título de Eleitor", "Título eleitoral",
+            "Certidão de nascimento", "Certidão de casamento", "Conselho Regional de Medicina",
+            "Documento de identidade", "Cadastro de Pessoas Físicas", "CNH", "RG",
+            "MINISTÉRIO DA FAZENDA CPF 123.456.789-00")) assertTrue(text, PhotoRules.isIdDocument(text))
+        for (text in listOf("Conta de luz ENERGIA CPF 123.456.789-00 vencimento 20/10/2026 total R$ 120,00",
+            "Boleto bancário CPF do pagador 123.456.789-00 código de barras vencimento valor 123,45"))
+            assertFalse(text, PhotoRules.isIdDocument(text))
     }
 
     @Test fun reportExplainsWhyNothingWasSuggested() {
@@ -355,5 +355,11 @@ class PhotoRulesTest {
         val text = PhotoRules.report(analyzed, PhotoRules.classify(analyzed), emptySet())
         assertTrue(text, text.startsWith("2 analisadas: 1 sugeridas (prints 1)"))
         assertTrue(text, "1 com pessoas" in text)
+    }
+
+    // Laudo/receita printado tem "CRM-SC 12345": é apagável; só a carteira do conselho é protegida.
+    @Test fun crmNumberOnPrintedReportIsNotIdDocument() {
+        assertFalse(PhotoRules.isIdDocument("Dr. Fulano - CRM-SC 12345 - Laudo de tomografia"))
+        assertTrue(PhotoRules.isIdDocument("Conselho Regional de Medicina - carteira de médico"))
     }
 }

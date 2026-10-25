@@ -48,7 +48,7 @@ class PhotoActivity : ComponentActivity() {
         if (session.index !in session.photos.indices) { finish(); return }
         try {
             val currentId = session.photos[session.index].id
-            val kept = KeptPhotoStore(this).read()
+            val kept = if (session.teaching) emptySet() else KeptPhotoStore(this).read()
             val photos = session.photos.filter { it.id !in kept }
             if (photos.isEmpty()) { finish(); return }
             session = session.copy(photos = photos, selected = session.selected - kept,
@@ -105,7 +105,11 @@ class PhotoActivity : ComponentActivity() {
     private fun toggle() {
         val id = session.photos[session.index].id
         val keep = id in session.selected
-        try { KeptPhotoStore(this).setKept(id, keep) }
+        try {
+            val photo = session.photos[session.index]
+            LearningEngine.get(this).record(listOf(TrainingExample(id, photo.features, !keep, System.currentTimeMillis())))
+            KeptPhotoStore(this).setKept(id, keep)
+        }
         catch (_: Exception) { caption.text = "Não foi possível salvar sua decisão. Tente novamente."; return }
         session = session.copy(selected = if (keep) session.selected - id else session.selected + id)
         try { store.write(session) } catch (_: Exception) { /* Kept decision is already persisted. */ }
@@ -122,7 +126,7 @@ class PhotoActivity : ComponentActivity() {
     }
 
     private fun adjacent(direction: Int): Int? = generateSequence(session.index + direction) { it + direction }
-        .takeWhile { it in session.photos.indices }.firstOrNull { session.photos[it].id in session.selected }
+        .takeWhile { it in session.photos.indices }.firstOrNull { session.teaching || session.photos[it].id in session.selected }
 
     private fun showPhoto() {
         loadJob?.cancel()

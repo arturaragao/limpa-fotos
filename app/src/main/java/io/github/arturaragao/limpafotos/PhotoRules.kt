@@ -1,10 +1,12 @@
 package io.github.arturaragao.limpafotos
 
 import java.util.Locale
+import java.text.Normalizer
 
 enum class Category(val title: String) {
     PRINTS("Prints"), DOCUMENTS("Documentos e papel"), STICKERS("Figurinhas"),
-    WHATSAPP("Lixo do WhatsApp"), BLURRY("Muito borradas"), DUPLICATES("Repetidas")
+    WHATSAPP("Lixo do WhatsApp"), BLURRY("Muito borradas"), DUPLICATES("Repetidas"),
+    GIFS("GIFs"), LEARNED("Pelo seu jeito")
 }
 
 data class PhotoMeta(
@@ -25,7 +27,9 @@ data class PhotoMeta(
 data class Analysis(val hash: Long, val sharpness: Double, val food: Boolean = false,
     val cat: Boolean = false, val plated: Boolean = false,
     val hasFace: Boolean = false, val person: Boolean = false,
-    val document: Boolean = false, val whatsappJunk: Boolean = false)
+    val document: Boolean = false, val whatsappJunk: Boolean = false,
+    val labels: Map<Int, Float> = emptyMap(), val faceCount: Int = 0, val largestFace: Float = 0f,
+    val textChars: Int = 0, val textLines: Int = 0, val idDocument: Boolean = false)
 
 enum class MediaPresence { MISSING, EXISTS, UNKNOWN }
 
@@ -69,6 +73,7 @@ object PhotoRules {
             meta.name.startsWith("Captura de tela", ignoreCase = true)) add(Category.PRINTS)
         val stickerWebp = meta.mime.equals("image/webp", true) && meta.width in 1..512 && meta.width == meta.height
         if (stickerWebp || path.contains("whatsapp stickers")) add(Category.STICKERS)
+        if (meta.mime.equals("image/gif", true)) add(Category.GIFS)
     }
 
     // Só rótulos que indicam gente de fato. Partes do corpo (mão, cabelo, pele, sorriso…) saíram: uma mão
@@ -76,23 +81,38 @@ object PhotoRules {
     private val PERSON_LABELS = setOf("person", "people", "selfie", "face", "portrait", "human",
         "baby", "child", "boy", "girl", "man", "woman", "bride", "groom", "crowd")
     const val PERSON_LABEL_MIN = 0.6f
-    /** Num print, só rosto grande (foto de gente printada) exclui; avatares e miniaturas não. */
-    const val PRINT_FACE_MIN = 0.2f
-
     fun hasPersonLabel(labels: List<Pair<String, Float>>): Boolean = labels.any {
         it.first.lowercase(Locale.ROOT) in PERSON_LABELS && it.second >= PERSON_LABEL_MIN
     }
     fun isScreenLike(meta: PhotoMeta): Boolean = metadataCategories(meta).isNotEmpty()
     /** largestFace = largura do maior rosto / largura da imagem (0 = nenhum rosto). */
     fun faceExcludes(meta: PhotoMeta, largestFace: Float): Boolean =
-        if (isScreenLike(meta)) largestFace >= PRINT_FACE_MIN else largestFace > 0f
-    /** Cache antigo (v3) usava regras de pessoa amplas demais: refaz só o que pode ter mudado. */
-    fun staleV3(meta: PhotoMeta, analysis: Analysis): Boolean =
-        analysis.person || (analysis.hasFace && isScreenLike(meta))
+        !isScreenLike(meta) && largestFace > 0f
+
+    fun isIdDocument(text: String): Boolean {
+        val normalized = Normalizer.normalize(text.uppercase(Locale.ROOT), Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}+"), "").replace(Regex("[^A-Z0-9]+"), " ").trim()
+        val cpfCard = Regex("(?:^| )CPF(?: |$)").containsMatchIn(normalized) &&
+            ("MINISTERIO DA FAZENDA" in normalized || "RECEITA FEDERAL" in normalized)
+        return cpfCard || ID_TERMS.any { Regex("(?:^| )${Regex.escape(it)}(?: |$)").containsMatchIn(normalized) }
+    }
+    private val ID_TERMS = listOf("HABILITACAO", "CARTEIRA NACIONAL DE HABILITACAO", "REGISTRO GERAL",
+        "CARTEIRA DE IDENTIDADE", "IDENTIDADE", "PASSAPORTE", "PASSPORT", "CARTEIRA DE TRABALHO",
+        "TITULO ELEITORAL", "TITULO DE ELEITOR", "CERTIDAO DE NASCIMENTO", "CERTIDAO DE CASAMENTO",
+        "CONSELHO REGIONAL DE MEDICINA", "DOCUMENTO DE IDENTIDADE", "CADASTRO DE PESSOAS FISICAS",
+        // "CRM" sozinho não: todo laudo/receita tem "CRM-SC" e ele quer poder apagar esses prints.
+        "CNH", "RG")
+
+    fun isProtected(photo: Photo): Boolean = photo.analysis == null || photo.meta.favorite ||
+        photo.analysis.cat || photo.analysis.idDocument ||
+        (!isScreenLike(photo.meta) && excludedByPerson(photo.analysis))
+
+    fun mandatory(meta: PhotoMeta, analysis: Analysis): Boolean = isScreenLike(meta) ||
+        analysis.document || analysis.textChars >= 80
 
     /** Resumo do que a análise encontrou, para nunca ficar "nenhuma sugestão" sem explicação. */
     fun report(analyzed: List<Photo>, classified: List<Photo>, keptIds: Set<Long>): String {
-        val people = analyzed.count { excludedByPerson(it.analysis) }
+        val people = analyzed.count { !isScreenLike(it.meta) && excludedByPerson(it.analysis) }
         val cat = analyzed.count { !excludedByPerson(it.analysis) && it.analysis?.cat == true }
         val kept = analyzed.count { it.meta.id in keptIds }
         val suggested = classified.filter(::initiallySelected)
@@ -155,7 +175,7 @@ object PhotoRules {
             val bits = if (band == 6) 10 else 9
             band to ((hash ushr (band * 9)) and ((1L shl bits) - 1))
         }
-        for (photo in photos.filter { !excludedByPerson(it.analysis) && it.meta.takenAt > 0 }
+        for (photo in photos.filter { !isProtected(it) && it.meta.takenAt > 0 }
             .sortedWith(compareBy<Photo> { it.meta.takenAt }.thenBy { it.meta.id })) {
             while (active.isNotEmpty() && photo.meta.takenAt - groups[active.first].first().meta.takenAt > HOUR_MS) {
                 val expired = active.removeFirst()
@@ -185,8 +205,11 @@ object PhotoRules {
         return groups.filter { it.size > 1 }
     }
 
-    fun classify(photos: List<Photo>, keptIds: Set<Long> = emptySet()): List<Photo> {
-        val eligible = filterKept(photos, keptIds).filter { !excludedByPerson(it.analysis) }
+    fun classify(photos: List<Photo>, keptIds: Set<Long> = emptySet(), learner: Learner = Learner(),
+        chosenIds: Set<Long> = emptySet()): List<Photo> {
+        val eligible = filterKept(photos, keptIds).filter {
+            it.analysis != null && (isScreenLike(it.meta) || !excludedByPerson(it.analysis))
+        }
         val duplicated = mutableSetOf<Long>()
         val keepers = mutableSetOf<Long>()
         for (group in duplicateGroups(eligible)) {
@@ -199,22 +222,28 @@ object PhotoRules {
             val categories = metadataCategories(photo.meta).toMutableSet()
             photo.analysis?.let {
                 if (isBlurry(it.sharpness)) categories.add(Category.BLURRY)
-                if (it.document) categories.add(Category.DOCUMENTS)
+                if (it.document || it.textChars >= 80) categories.add(Category.DOCUMENTS)
                 val path = photo.meta.path.lowercase(Locale.ROOT)
                 if (it.whatsappJunk && path.contains("whatsapp images/") && !path.contains("/sent/"))
                     categories.add(Category.WHATSAPP)
             }
             if (photo.meta.id in duplicated) categories.add(Category.DUPLICATES)
-            photo.copy(categories = categories, keeper = photo.meta.id in keepers)
+            // Explicit marks remain reviewable even before the model has examples of both classes.
+            if (!isProtected(photo) && !mandatory(photo.meta, photo.analysis!!) &&
+                (photo.meta.id in chosenIds || learner.probability(photo.meta, photo.analysis) >= 0.5))
+                categories.add(Category.LEARNED)
+            photo.copy(categories = categories, keeper = photo.meta.id in keepers && photo.meta.id !in chosenIds)
         }
     }
 
     fun initiallySelected(photo: Photo): Boolean {
-        // Fotos do Koda (gato) nunca são sugeridas.
-        if (excludedByPerson(photo.analysis) || photo.analysis?.cat == true) return false
-        if (photo.meta.path.startsWith("DCIM/Camera/", ignoreCase = true) &&
-            photo.categories == setOf(Category.BLURRY)) return false
-        return photo.categories.isNotEmpty() && !photo.meta.favorite && !photo.keeper
+        if (isProtected(photo)) return false
+        if (mandatory(photo.meta, photo.analysis!!)) return true
+        if (photo.keeper) return false
+        if (Category.LEARNED in photo.categories || Category.WHATSAPP in photo.categories ||
+            Category.DUPLICATES in photo.categories) return true
+        // Foto da câmera só borrada continua de fora (pode ser a única daquele momento).
+        return Category.BLURRY in photo.categories && !photo.meta.path.startsWith("DCIM/Camera/", ignoreCase = true)
     }
 
     /** Decimal MB, as used for storage capacity; locale is explicit for JVM tests. */

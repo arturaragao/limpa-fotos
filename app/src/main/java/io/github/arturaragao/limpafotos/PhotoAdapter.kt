@@ -29,6 +29,7 @@ class PhotoAdapter(
     private var photos: List<Photo> = emptyList()
     private var selected: Set<Long> = emptySet()
     var enabled = true
+    var teaching = false
     private val cache = object : LruCache<String, Bitmap>(24 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = value.allocationByteCount
     }
@@ -90,7 +91,7 @@ class PhotoAdapter(
                 append(PhotoRules.formatMb(photo.meta.bytes))
             }
             root.contentDescription = "${photo.meta.name}, ${caption.text}, ${if (checked) "marcada" else "desmarcada"}"
-            root.setOnClickListener { if (enabled) preview(photo) }
+            root.setOnClickListener { if (enabled) { if (teaching) toggle(photo.meta.id) else preview(photo) } }
             check.contentDescription = if (checked) "Desmarcar e manter ${photo.meta.name}" else "Marcar ${photo.meta.name}"
             check.setOnClickListener { if (enabled) toggle(photo.meta.id) }
             root.setOnLongClickListener { if (enabled) preview(photo); true }

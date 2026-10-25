@@ -17,6 +17,9 @@ import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.google.mlkit.vision.label.ImageLabeler
 import com.google.mlkit.vision.label.ImageLabeling
 import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -88,13 +91,12 @@ class PhotoScanner(private val context: Context) {
         val keptIds = KeptPhotoStore(context).read()
         val eligible = all.filter { it.id !in keptIds }
         val cache = AnalysisCache(context)
-        val metaByKey = all.associateBy(PhotoRules::analysisKey)
         val (version, raw) = cache.read()
-        // v3 → v4: análises que as regras antigas de pessoa podem ter excluído errado são refeitas.
-        val stored = if (version == 4) raw else raw.filter { (key, a) ->
-            val meta = metaByKey[key]
-            meta == null || !PhotoRules.staleV3(meta, a)
-        }
+        val stored = if (version == 5) raw else emptyMap()
+        val reanalyzing = version in 3..4 || context.getSharedPreferences("analysis_settings", Context.MODE_PRIVATE)
+            .getBoolean("learning_reanalysis", false)
+        if (reanalyzing) context.getSharedPreferences("analysis_settings", Context.MODE_PRIVATE)
+            .edit().putBoolean("learning_reanalysis", true).apply()
         val validKeys = all.map(PhotoRules::analysisKey).toHashSet()
         val completed = stored.filterKeys { it in validKeys }.toMutableMap()
         // Partial access hides media without deleting it: retain its cached analyses.
@@ -104,6 +106,7 @@ class PhotoScanner(private val context: Context) {
         var cacheWarning = false
         var labeler: ImageLabeler? = null
         var detector: FaceDetector? = null
+        var recognizer: TextRecognizer? = null
         var batchDone = 0
         fun completedCount() = eligible.count { PhotoRules.analysisKey(it) in completed }
         progress(ScanProgress(completedCount(), eligible.size, 0, batch.size))
@@ -112,11 +115,13 @@ class PhotoScanner(private val context: Context) {
                 currentCoroutineContext().ensureActive()
                 try {
                     val activeLabeler = labeler ?: ImageLabeling.getClient(
-                        ImageLabelerOptions.Builder().setConfidenceThreshold(0.4f).build()).also { labeler = it }
+                        ImageLabelerOptions.Builder().setConfidenceThreshold(0.1f).build()).also { labeler = it }
                     val activeDetector = detector ?: FaceDetection.getClient(FaceDetectorOptions.Builder()
                         .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
                         .setMinFaceSize(0.05f).build()).also { detector = it }
-                    completed[PhotoRules.analysisKey(meta)] = analyze(meta, activeLabeler, activeDetector)
+                    val activeRecognizer = recognizer ?: TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                        .also { recognizer = it }
+                    completed[PhotoRules.analysisKey(meta)] = analyze(meta, activeLabeler, activeDetector, activeRecognizer)
                     // Each completed photo survives an error or interruption in the next one.
                     cacheWarning = !cache.write(hidden + completed) || cacheWarning
                 } catch (cancelled: CancellationException) {
@@ -132,17 +137,25 @@ class PhotoScanner(private val context: Context) {
             val photos = all.mapNotNull { meta ->
                 completed[PhotoRules.analysisKey(meta)]?.let { Photo(meta, it, emptySet()) }
             }
-            val classified = PhotoRules.classify(photos, keptIds)
+            val classified = withContext(Dispatchers.Default) {
+                val engine = LearningEngine.get(context)
+                PhotoRules.classify(photos, keptIds, engine.model, engine.examples().filter { it.apagar }.map { it.id }.toSet())
+            }
+            val notice = if (reanalyzing) " Análise refeita para aprender." else ""
+            if (reanalyzing && limit > 0 && completedCount() == eligible.size)
+                context.getSharedPreferences("analysis_settings", Context.MODE_PRIVATE)
+                    .edit().putBoolean("learning_reanalysis", false).apply()
             ScanResult(classified, unreadable, cacheWarning,
-                ScanProgress(completedCount(), eligible.size), PhotoRules.report(photos, classified, keptIds))
+                ScanProgress(completedCount(), eligible.size), PhotoRules.report(photos, classified, keptIds) + notice)
         } finally {
-            try { try { labeler?.close() } finally { detector?.close() } } finally {
+            try { try { try { labeler?.close() } finally { detector?.close() } } finally { recognizer?.close() } } finally {
                 cacheWarning = !cache.write(hidden + completed) || cacheWarning
             }
         }.let { it.copy(cacheWarning = cacheWarning) }
     }
 
-    private suspend fun analyze(meta: PhotoMeta, labeler: ImageLabeler, detector: FaceDetector): Analysis {
+    private suspend fun analyze(meta: PhotoMeta, labeler: ImageLabeler, detector: FaceDetector,
+        recognizer: TextRecognizer): Analysis {
         val bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, photoUri(meta.id))) { decoder, info, _ ->
             // Larger input protects small faces in group photos; blur retains its 256 px scale.
             val scale = 1600.0 / max(info.size.width, info.size.height).coerceAtLeast(1)
@@ -151,14 +164,12 @@ class PhotoScanner(private val context: Context) {
                 (info.size.height * scale.coerceAtMost(1.0)).roundToInt().coerceAtLeast(1))
         }
         try {
-            val largestFace = suspendCoroutine<Float> { continuation ->
+            val faces = suspendCoroutine<List<com.google.mlkit.vision.face.Face>> { continuation ->
                 detector.process(InputImage.fromBitmap(bitmap, 0))
-                    .addOnSuccessListener { faces -> continuation.resume(
-                        faces.maxOfOrNull { it.boundingBox.width().toFloat() / bitmap.width } ?: 0f) }
+                    .addOnSuccessListener { continuation.resume(it) }
                     .addOnFailureListener { continuation.resumeWithException(it) }
             }
-            // A face excludes every category, including duplicates. In prints only a large face counts.
-            if (PhotoRules.faceExcludes(meta, largestFace)) return Analysis(0, Double.NaN, hasFace = true)
+            val largestFace = faces.maxOfOrNull { it.boundingBox.width().toFloat() / bitmap.width } ?: 0f
             val scale = (256.0 / max(bitmap.width, bitmap.height)).coerceAtMost(1.0)
             val preview = Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).roundToInt().coerceAtLeast(1),
                 (bitmap.height * scale).roundToInt().coerceAtLeast(1), true)
@@ -172,16 +183,25 @@ class PhotoScanner(private val context: Context) {
                 if (pixels[y * 9 + x] > pixels[y * 9 + x + 1]) hash = hash or (1L shl (y * 8 + x))
             }
             // suspendCoroutine intentionally keeps the bitmap alive until the native task completes.
-            val labels = suspendCoroutine<List<Pair<String, Float>>> { continuation ->
+            val foundLabels = suspendCoroutine<List<com.google.mlkit.vision.label.ImageLabel>> { continuation ->
                 labeler.process(InputImage.fromBitmap(bitmap, 0))
-                    .addOnSuccessListener { found -> continuation.resume(found.map { it.text.lowercase(Locale.ROOT) to it.confidence }) }
+                    .addOnSuccessListener { continuation.resume(it) }
+                    .addOnFailureListener { continuation.resumeWithException(it) }
+            }
+            val labels = foundLabels.map { it.text.lowercase(Locale.ROOT) to it.confidence }
+            val text = suspendCoroutine<com.google.mlkit.vision.text.Text> { continuation ->
+                recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                    .addOnSuccessListener { continuation.resume(it) }
                     .addOnFailureListener { continuation.resumeWithException(it) }
             }
             // Limiar baixo para gato: melhor deixar uma foto ruim do Koda do que sugerir apagar uma boa.
             val cat = labels.any { it.first == "cat" && it.second >= 0.5f }
-            // Print/figurinha: rótulo de pessoa não exclui (só rosto grande, acima).
             val person = !PhotoRules.isScreenLike(meta) && PhotoRules.hasPersonLabel(labels)
             return Analysis(hash, variance, cat = cat, person = person,
+                hasFace = PhotoRules.faceExcludes(meta, largestFace), faceCount = faces.size, largestFace = largestFace,
+                labels = foundLabels.associate { it.index to it.confidence },
+                textChars = text.text.count { it.isLetterOrDigit() },
+                textLines = text.textBlocks.sumOf { it.lines.size }, idDocument = PhotoRules.isIdDocument(text.text),
                 document = PhotoRules.hasDocumentLabel(labels), whatsappJunk = PhotoRules.hasJunkLabel(labels))
         } finally {
             bitmap.recycle()
@@ -201,19 +221,24 @@ class PhotoScanner(private val context: Context) {
 
 /** Versioned, atomic JSON in filesDir. Only id/date, hash, score and boolean; never image data. */
 private class AnalysisCache(context: Context) {
-    // v2 has no face result: never reuse it. v3 is filtered by PhotoRules.staleV3 and rewritten as v4.
+    // Keep the filename to detect v3/v4 upgrades; only v5 has complete learning features.
     private val file = AtomicFile(File(context.filesDir, "analysis-v3.json"))
     fun read(): Pair<Int, Map<String, Analysis>> = try {
         val json = JSONObject(file.openRead().bufferedReader(Charsets.UTF_8).use { it.readText() })
         val version = json.optInt("version")
-        version to if (version != 3 && version != 4) emptyMap() else buildMap {
+        version to if (version != 5) emptyMap() else buildMap {
             val entries = json.getJSONArray("entries")
             for (i in 0 until entries.length()) {
                 val e = entries.getJSONObject(i)
                 put(e.getString("key"), Analysis(e.getString("hash").toLong(),
                     if (e.isNull("sharpness")) Double.NaN else e.getDouble("sharpness"),
                     cat = e.getBoolean("cat"), hasFace = e.getBoolean("hasFace"), person = e.getBoolean("person"),
-                    document = e.getBoolean("document"), whatsappJunk = e.getBoolean("whatsappJunk")))
+                    document = e.getBoolean("document"), whatsappJunk = e.getBoolean("whatsappJunk"),
+                    faceCount = e.getInt("faceCount"), largestFace = e.getDouble("largestFace").toFloat(),
+                    textChars = e.getInt("textChars"), textLines = e.getInt("textLines"), idDocument = e.getBoolean("idDocument"),
+                    labels = e.getJSONObject("labels").let { labels -> labels.keys().asSequence().associate { index ->
+                        index.toInt() to labels.getDouble(index).toFloat()
+                    } }))
             }
         }
     } catch (_: Exception) { 0 to emptyMap() }
@@ -225,8 +250,13 @@ private class AnalysisCache(context: Context) {
             entries.forEach { (key, a) -> list.put(JSONObject().put("key", key).put("hash", a.hash.toString())
                 .put("sharpness", if (a.sharpness.isFinite()) a.sharpness else JSONObject.NULL)
                 .put("cat", a.cat).put("hasFace", a.hasFace).put("person", a.person)
-                .put("document", a.document).put("whatsappJunk", a.whatsappJunk)) }
-            val bytes = JSONObject().put("version", 4).put("entries", list).toString().toByteArray(Charsets.UTF_8)
+                .put("document", a.document).put("whatsappJunk", a.whatsappJunk)
+                .put("faceCount", a.faceCount).put("largestFace", a.largestFace.toDouble())
+                .put("textChars", a.textChars).put("textLines", a.textLines).put("idDocument", a.idDocument)
+                .put("labels", JSONObject().also { labels -> a.labels.forEach { (index, confidence) ->
+                    labels.put(index.toString(), confidence.toDouble())
+                } })) }
+            val bytes = JSONObject().put("version", 5).put("entries", list).toString().toByteArray(Charsets.UTF_8)
             stream = file.startWrite()
             stream.write(bytes)
             file.finishWrite(stream)
@@ -259,27 +289,27 @@ class KeptPhotoStore(context: Context) {
 }
 
 /** File-backed preview session avoids Binder limits for large category lists. No image data. */
-data class ReviewPhoto(val id: Long, val name: String)
-data class ReviewSession(val photos: List<ReviewPhoto>, val selected: Set<Long>, val index: Int)
+data class ReviewPhoto(val id: Long, val name: String, val features: DoubleArray = DoubleArray(Learner.FEATURE_COUNT))
+data class ReviewSession(val photos: List<ReviewPhoto>, val selected: Set<Long>, val index: Int, val teaching: Boolean = false)
 class ReviewSessionStore(context: Context) {
     private val file = AtomicFile(File(context.filesDir, "review-session.json"))
     fun write(session: ReviewSession) {
         val photos = JSONArray()
-        session.photos.forEach { photos.put(JSONObject().put("id", it.id).put("name", it.name)) }
+        session.photos.forEach { photos.put(JSONObject().put("id", it.id).put("name", it.name).put("features", it.features.toJson())) }
         writeJson(file, JSONObject().put("photos", photos).put("selected", JSONArray(session.selected.toList()))
-            .put("index", session.index).toString())
+            .put("index", session.index).put("teaching", session.teaching).toString())
     }
     fun read(): ReviewSession {
         val json = JSONObject(file.openRead().bufferedReader(Charsets.UTF_8).use { it.readText() })
         val photos = json.getJSONArray("photos")
         val selected = json.getJSONArray("selected")
         return ReviewSession((0 until photos.length()).map { photos.getJSONObject(it).let { p ->
-            ReviewPhoto(p.getLong("id"), p.getString("name")) } },
-            (0 until selected.length()).map { selected.getLong(it) }.toSet(), json.getInt("index"))
+            ReviewPhoto(p.getLong("id"), p.getString("name"), p.getJSONArray("features").features()) } },
+            (0 until selected.length()).map { selected.getLong(it) }.toSet(), json.getInt("index"), json.optBoolean("teaching"))
     }
 }
 
-private fun writeJson(file: AtomicFile, text: String) {
+internal fun writeJson(file: AtomicFile, text: String) {
     var stream: java.io.FileOutputStream? = null
     try {
         stream = file.startWrite()
