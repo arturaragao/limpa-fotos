@@ -142,7 +142,7 @@ class PhotoRulesTest {
         assertEquals(3L, classified.single { it.keeper }.meta.id)
         assertTrue(classified.all { Category.DUPLICATES in it.categories })
         assertFalse(PhotoRules.initiallySelected(classified.last()))
-        assertFalse(PhotoRules.initiallySelected(classified.first())) // Prior alone does not suggest camera photos.
+        assertTrue(PhotoRules.initiallySelected(classified.first())) // Repetida que não é a melhor é sugerida.
     }
 
     @Test fun favoritesAreNeverPremarkedInAnyCategory() {
@@ -178,9 +178,9 @@ class PhotoRulesTest {
         assertEquals(setOf(Category.BLURRY), classified.categories)
         assertFalse(PhotoRules.initiallySelected(classified))
         val elsewhere = classified.copy(meta = classified.meta.copy(path = "Pictures/Camera/"))
-        assertFalse(PhotoRules.initiallySelected(elsewhere))
+        assertTrue(PhotoRules.initiallySelected(elsewhere))
         val extra = classified.copy(categories = setOf(Category.BLURRY, Category.DUPLICATES))
-        assertFalse(PhotoRules.initiallySelected(extra))
+        assertTrue(PhotoRules.initiallySelected(extra))
     }
 
     @Test fun keptIdsAreExcludedFromEveryCategoryEvenAfterModification() {
