@@ -73,8 +73,9 @@ público `arturaragao/limpa-fotos`. Kotlin, applicationId
 - Não fazer commit/push. Não ler/gravar outros repositórios para esta tarefa.
 - Tudo no aparelho, sem fotos na rede, tokens, Firebase ou serviço pago.
 - Não apagar imagens diretamente; só lixeira mediante confirmação do Android.
+  Mover para a pasta do lote (createWriteRequest + RELATIVE_PATH) autorizado em 25/10/2026.
 - Nunca pré-marcar favoritos ou a melhor imagem de um grupo de repetidas.
-- Dependências de ML autorizadas: image-labeling:17.0.9 e face-detection:16.1.7
+- Dependências de ML (desde 25/10/2026 as versões play-services-mlkit-*, não embarcadas): image-labeling:17.0.9 e face-detection:16.1.7
   e text-recognition:16.0.1 (latino) embarcadas, mais coroutines/lifecycle se necessários.
   Nenhuma outra dependência nova. Não incluir biblioteca de imagem ou UI.
   Face-detection e text-recognition autorizados em 24/10/2026.
@@ -137,6 +138,16 @@ Intervalos de workers são aproximados. Restrição de rede precisa acompanhar
 eventuais mudanças nos hosts de download do GitHub.
 
 ## Histórico
+
+- 25/10/2026 (lote, APK leve, sem repetidas): ML Kit trocado pelas versões do Google
+  Play Services (play-services-mlkit-*; modelos baixados uma vez pelo celular via
+  meta-data DEPENDENCIES ica,face,ocr; offline depois) porque o APK de 68 MB deixava a
+  atualização lenta. Repetidas desligadas (PhotoRules.SUGGEST_DUPLICATES = false, pedido
+  do Artur). Novo botão principal "Apagar N no Google Fotos": createWriteRequest (1
+  confirmação) move tudo para Pictures/Apagar - Limpar Fotos/; no Google Fotos ele abre
+  a pasta, seleciona tudo e manda para a lixeira (apaga celular + nuvem). Fotos nessa
+  pasta não são sugeridas de novo; exemplos de treino confirmam quando somem do
+  MediaStore (onResume). Um por um e lixeira só do celular viraram opções secundárias.
 
 - 24/10/2026 (aprendizado offline): adicionados OCR latino embarcado autorizado,
   cache v5 com características completas, identificação pessoal protegida e regras

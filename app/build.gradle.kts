@@ -51,8 +51,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    implementation("com.google.mlkit:image-labeling:17.0.9")
-    implementation("com.google.mlkit:face-detection:16.1.7")
-    implementation("com.google.mlkit:text-recognition:16.0.1")
+    // Modelos do Google Play Services (baixados uma vez pelo celular, offline depois): APK cai de ~68 MB para poucos MB.
+    implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")
+    implementation("com.google.android.gms:play-services-mlkit-face-detection:17.1.0")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
     testImplementation("junit:junit:4.13.2")
 }

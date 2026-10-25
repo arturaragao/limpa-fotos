@@ -53,6 +53,10 @@ data class Photo(
 object PhotoRules {
     const val BLUR_THRESHOLD = 15.0
     const val DUPLICATE_DISTANCE = 6
+    /** Artur (25/10/2026): por enquanto não sugerir fotos parecidas/repetidas. */
+    const val SUGGEST_DUPLICATES = false
+    /** Pasta para onde o lote vai antes de o Artur apagar no Google Fotos. */
+    const val BATCH_FOLDER = "Pictures/Apagar - Limpar Fotos/"
     const val HOUR_MS = 3_600_000L
 
     fun analysisKey(meta: PhotoMeta): String = "${meta.id}:${meta.modified}"
@@ -208,11 +212,11 @@ object PhotoRules {
     fun classify(photos: List<Photo>, keptIds: Set<Long> = emptySet(), learner: Learner = Learner(),
         chosenIds: Set<Long> = emptySet()): List<Photo> {
         val eligible = filterKept(photos, keptIds).filter {
-            it.analysis != null && (isScreenLike(it.meta) || !excludedByPerson(it.analysis))
+            !it.meta.path.startsWith(BATCH_FOLDER, ignoreCase = true) && it.analysis != null && (isScreenLike(it.meta) || !excludedByPerson(it.analysis))
         }
         val duplicated = mutableSetOf<Long>()
         val keepers = mutableSetOf<Long>()
-        for (group in duplicateGroups(eligible)) {
+        for (group in if (SUGGEST_DUPLICATES) duplicateGroups(eligible) else emptyList()) {
             duplicated.addAll(group.map { it.meta.id })
             val best = group.maxWithOrNull(compareBy<Photo> { it.meta.width.toLong() * it.meta.height }
                 .thenBy { it.analysis?.sharpness ?: 0.0 }.thenBy { it.meta.bytes }.thenBy { -it.meta.id })!!

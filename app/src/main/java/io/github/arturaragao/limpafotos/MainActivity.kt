@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var rescan: Button
     private lateinit var quantity: EditText
     private lateinit var reminder: Button
+    private lateinit var batchTrash: Button
     private lateinit var trash: Button
     private lateinit var localTrash: Button
     private lateinit var teach: Button
@@ -64,6 +65,8 @@ class MainActivity : ComponentActivity() {
     private var lastCategory: Category? = null
     private var accessMode = -1
     private var trashPending = false
+    private var googleBatchIds = longArrayOf()
+    private var googleBatchDialog: AlertDialog? = null
     private var checkingGoogle = false
     private var pendingAnalysis = false
     private val notificationPreferences by lazy { getSharedPreferences("notification_permission", MODE_PRIVATE) }
@@ -94,10 +97,19 @@ class MainActivity : ComponentActivity() {
         model.localTrashResult(result.resultCode == Activity.RESULT_OK)
         render(model.state.value)
     }
+    private val googleBatchWriteRequest = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val ids = googleBatchIds.toList()
+        googleBatchIds = longArrayOf()
+        trashPending = false
+        if (result.resultCode == Activity.RESULT_OK) model.moveGoogleBatch(ids)
+        else model.message("Movimentação cancelada. Suas fotos continuam na galeria.")
+        render(model.state.value)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         trashPending = savedInstanceState?.getBoolean("trashPending") ?: false
+        googleBatchIds = savedInstanceState?.getLongArray("googleBatchIds") ?: longArrayOf()
         pendingAnalysis = savedInstanceState?.getBoolean("pendingAnalysis") ?: false
         buildScreen()
         lifecycleScope.launch {
@@ -107,6 +119,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("trashPending", trashPending)
+        outState.putLongArray("googleBatchIds", googleBatchIds)
         outState.putBoolean("pendingAnalysis", pendingAnalysis)
         super.onSaveInstanceState(outState)
     }
@@ -124,6 +137,9 @@ class MainActivity : ComponentActivity() {
         updateReminderButton()
         Updater.checkOnOpen(this, intent.getBooleanExtra(Updater.EXTRA, false))
         intent.removeExtra(Updater.EXTRA)
+        if (!trashPending && !model.state.value.learning) {
+            lifecycleScope.launch { model.checkStagedDeletions() }
+        }
         if (model.state.value.googleFlow != null && !checkingGoogle) {
             checkingGoogle = true
             lifecycleScope.launch {
@@ -269,13 +285,16 @@ class MainActivity : ComponentActivity() {
         empty = text("", 16f).apply { gravity = Gravity.CENTER; setPadding(dp(12), dp(8), dp(12), dp(8)) }
         root.addView(empty, LinearLayout.LayoutParams(-1, -2))
         root.addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
-        trash = action("Apagar no Google Fotos") { confirmGooglePhotos() }.apply {
+        batchTrash = action("Apagar no Google Fotos (em lote)") { prepareGoogleBatch() }.apply {
             minHeight = dp(56)
+            textSize = 15f
             setTextColor(getColor(R.color.on_accent))
             backgroundTintList = ColorStateList.valueOf(getColor(R.color.accent))
         }
+        root.addView(batchTrash, LinearLayout.LayoutParams(-1, -2))
+        trash = action("Google Fotos (uma por uma)") { confirmGooglePhotos() }.apply { textSize = 12f }
         root.addView(trash, LinearLayout.LayoutParams(-1, -2))
-        localTrash = action("Lixeira só do celular") { moveToTrash() }
+        localTrash = action("Lixeira só do celular") { moveToTrash() }.apply { textSize = 12f }
         root.addView(localTrash, LinearLayout.LayoutParams(-1, -2))
         googleActions = LinearLayout(this).apply { visibility = View.GONE }
         googleSkip = action("Pular") { model.skipGooglePhoto(); driveGooglePhotos() }
@@ -284,7 +303,7 @@ class MainActivity : ComponentActivity() {
         googleActions.addView(googleRetry, LinearLayout.LayoutParams(0, -2, 1f))
         googleActions.addView(action("Encerrar") { model.finishGooglePhotos() }, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(googleActions, LinearLayout.LayoutParams(-1, -2))
-        root.addView(text("Google Fotos: toque na lixeira lá e volte aqui para continuar.\nLixeira só do celular: a cópia na nuvem pode continuar lá.", 11f, R.color.secondary)
+        root.addView(text("Em lote: reúne as fotos numa pasta para apagar no Google Fotos.\nLixeira só do celular: a cópia na nuvem pode continuar lá.", 11f, R.color.secondary)
             .apply { gravity = Gravity.CENTER; setPadding(0, dp(6), 0, 0) })
     }
 
@@ -301,7 +320,7 @@ class MainActivity : ComponentActivity() {
     private fun render(state: CleanState) {
         val mode = MediaAccess.mode(this)
         val flow = state.googleFlow
-        val busy = trashPending || flow != null || state.learning
+        val busy = trashPending || flow != null || state.learning || state.googleBatchResult != null
         val counts = state.progress ?: ScanProgress(0, 0)
         val reclaimable = state.photos.filter(PhotoRules::initiallySelected).sumOf { it.meta.bytes }
         summary.text = getString(R.string.analysis_summary, counts.done, counts.total, PhotoRules.formatMb(reclaimable)) +
@@ -357,16 +376,23 @@ class MainActivity : ComponentActivity() {
             "Nenhuma sugestão nesta categoria entre as fotos analisadas." else "Sua galeria será analisada aqui."
         adapter.enabled = !state.scanning && !busy
         val selected = state.photos.filter { it.meta.id in state.selected }
-        trash.text = "Apagar ${selected.size} no Google Fotos (${PhotoRules.formatMb(selected.sumOf { it.meta.bytes })})"
+        batchTrash.text = "Apagar ${selected.size} no Google Fotos (${PhotoRules.formatMb(selected.sumOf { it.meta.bytes })})"
+        trash.text = "Google Fotos (uma por uma) • ${selected.size} fotos"
         trash.isEnabled = selected.isNotEmpty() && !state.teaching && !state.scanning && !busy && mode > 0
+        batchTrash.isEnabled = trash.isEnabled
         trash.visibility = if (state.teaching) View.GONE else View.VISIBLE
+        batchTrash.visibility = trash.visibility
         localTrash.visibility = trash.visibility
         trash.alpha = if (trash.isEnabled) 1f else 0.5f
+        batchTrash.alpha = trash.alpha
         localTrash.isEnabled = trash.isEnabled
         localTrash.alpha = trash.alpha
         googleActions.visibility = if (flow != null) View.VISIBLE else View.GONE
         googleSkip.isEnabled = flow?.needsDecision == true && !checkingGoogle
         googleRetry.isEnabled = googleSkip.isEnabled
+        state.googleBatchResult?.let { result ->
+            if (googleBatchDialog?.isShowing != true) showGoogleBatchResult(result)
+        }
     }
 
     private fun showSettings() {
@@ -427,6 +453,43 @@ class MainActivity : ComponentActivity() {
         dialog.show()
     }
 
+    private fun prepareGoogleBatch() {
+        val state = model.state.value
+        if (state.scanning || state.teaching || state.learning || trashPending || state.googleFlow != null) return
+        val ids = state.photos.filter { it.meta.id in state.selected }.map { it.meta.id }
+        if (ids.isEmpty()) return
+        try {
+            model.stageDeletion(ids)
+            val request = MediaStore.createWriteRequest(contentResolver, ids.map(::photoUri))
+            googleBatchIds = ids.toLongArray()
+            trashPending = true
+            googleBatchWriteRequest.launch(IntentSenderRequest.Builder(request.intentSender).build())
+            render(state)
+        } catch (_: Exception) {
+            googleBatchIds = longArrayOf()
+            trashPending = false
+            model.message("Não foi possível abrir a confirmação. Tente novamente ou selecione menos fotos.")
+        }
+    }
+
+    private fun showGoogleBatchResult(result: GoogleBatchResult) {
+        googleBatchDialog = AlertDialog.Builder(this)
+            .setTitle("Apagar no Google Fotos (em lote)")
+            .setMessage(googleBatchMessage(result))
+            .setPositiveButton("Abrir Google Fotos") { _, _ ->
+                model.dismissGoogleBatchResult()
+                try {
+                    val launch = packageManager.getLaunchIntentForPackage("com.google.android.apps.photos")
+                    if (launch != null) startActivity(launch)
+                    else model.message("Google Fotos não está disponível neste aparelho.")
+                } catch (_: Exception) { model.message("Não foi possível abrir o Google Fotos neste aparelho.") }
+            }
+            .setNegativeButton("Depois") { _, _ -> model.dismissGoogleBatchResult() }
+            .setOnCancelListener { model.dismissGoogleBatchResult() }
+            .create()
+        googleBatchDialog?.show()
+    }
+
     private fun confirmGooglePhotos() {
         val state = model.state.value
         if (state.scanning || state.teaching || trashPending || state.googleFlow != null || state.selected.isEmpty()) return
@@ -462,7 +525,7 @@ class MainActivity : ComponentActivity() {
         if (uris.isEmpty()) return
         try {
             model.stageDeletion(uris.map { android.content.ContentUris.parseId(it) })
-            // The only write to the gallery. No delete(), resolver.update() or automatic approval.
+            // A lixeira local continua dependendo da confirmação do Android.
             val request = MediaStore.createTrashRequest(contentResolver, uris, true)
             trashPending = true
             trashRequest.launch(IntentSenderRequest.Builder(request.intentSender).build())

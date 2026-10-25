@@ -136,7 +136,20 @@ class PhotoRulesTest {
         assertEquals(2, PhotoRules.duplicateGroups(listOf(photo(1), photo(2, spread))).single().size)
     }
 
+    @Test fun similarPhotosAreNotSuggestedWhileDisabled() {
+        val classified = PhotoRules.classify(listOf(photo(1, width = 900, sharpness = 500.0),
+            photo(2, width = 1200, sharpness = 20.0), photo(3, width = 1200, sharpness = 30.0)))
+        assertFalse(PhotoRules.SUGGEST_DUPLICATES)
+        assertTrue(classified.none { Category.DUPLICATES in it.categories || it.keeper })
+    }
+
+    @Test fun photosAlreadyInBatchFolderAreNotSuggestedAgain() {
+        val moved = Photo(meta(path = PhotoRules.BATCH_FOLDER, name = "Screenshot_1.png"), Analysis(0, 500.0, false), emptySet())
+        assertTrue(PhotoRules.classify(listOf(moved)).isEmpty())
+    }
+
     @Test fun largestThenSharpestIsKeptEvenIfItIsAlsoBlurry() {
+        if (!PhotoRules.SUGGEST_DUPLICATES) return
         val classified = PhotoRules.classify(listOf(photo(1, width = 900, sharpness = 500.0),
             photo(2, width = 1200, sharpness = 20.0), photo(3, width = 1200, sharpness = 30.0)))
         assertEquals(3L, classified.single { it.keeper }.meta.id)

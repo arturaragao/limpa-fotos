@@ -1,6 +1,7 @@
 package io.github.arturaragao.limpafotos
 
 import android.app.Application
+import android.content.ContentValues
 import android.content.Context
 import android.os.Bundle
 import android.provider.MediaStore
@@ -35,6 +36,7 @@ data class CleanState(
     val scanned: Boolean = false,
     val batchLimit: Int = 200,
     val googleFlow: GooglePhotosFlow? = null,
+    val googleBatchResult: GoogleBatchResult? = null,
     val teaching: Boolean = false,
     val learning: Boolean = false,
     val exampleCount: Int = 0,
@@ -60,6 +62,7 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
     private var workerFailure: String? = null
     private val learning = LearningEngine.get(application)
     private var analyzedPhotos: List<Photo> = emptyList()
+    private var movingGoogleBatch = false
 
     init {
         viewModelScope.launch {
@@ -233,7 +236,7 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
     }
 
     fun showKeptAgain() {
-        if (mutable.value.scanning || mutable.value.teaching || mutable.value.googleFlow != null) return
+        if (mutable.value.scanning || mutable.value.learning || mutable.value.teaching || mutable.value.googleFlow != null) return
         try { KeptPhotoStore(getApplication()).clear(); scan(analyzeMore = false) }
         catch (_: Exception) { message("Não foi possível limpar a lista de mantidas.") }
     }
@@ -300,14 +303,14 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
     }
 
     private suspend fun reevaluate() {
-        if (mutable.value.teaching || mutable.value.scanning || mutable.value.googleFlow != null) return
+        if (movingGoogleBatch || mutable.value.teaching || mutable.value.scanning || mutable.value.googleFlow != null) return
         val source = analyzedPhotos
         val suggestions = withContext(Dispatchers.Default) {
             PhotoRules.classify(source, KeptPhotoStore(getApplication()).read(), learning.model,
                 learning.examples().filter { it.apagar }.map { it.id }.toSet())
                 .filter(PhotoRules::initiallySelected)
         }
-        if (mutable.value.teaching || mutable.value.scanning || mutable.value.googleFlow != null || source !== analyzedPhotos) return
+        if (movingGoogleBatch || mutable.value.teaching || mutable.value.scanning || mutable.value.googleFlow != null || source !== analyzedPhotos) return
         mutable.update { it.copy(photos = suggestions, selected = suggestions.map { p -> p.meta.id }.toSet()) }
     }
 
@@ -363,19 +366,74 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
     fun stageDeletion(ids: List<Long>) {
         val previous = try { DeletionTrainingStore(getApplication()).read().associateBy { it.id } }
             catch (_: java.io.FileNotFoundException) { emptyMap() }
-        DeletionTrainingStore(getApplication()).write(ids.mapNotNull { id ->
+        val staged = ids.mapNotNull { id ->
             analyzedPhotos.firstOrNull { it.meta.id == id }?.let {
                 TrainingExample(id, Learner.features(it.meta, it.analysis!!), true, System.currentTimeMillis())
             } ?: previous[id]
-        })
+        }
+        DeletionTrainingStore(getApplication()).write((previous.values + staged).associateBy { it.id }.values.toList())
     }
 
     private fun confirmedDeletion(ids: List<Long>) {
+        if (ids.isEmpty()) return
         try {
-            val staged = DeletionTrainingStore(getApplication()).read().filter { it.id in ids }
+            val store = DeletionTrainingStore(getApplication())
+            val pending = store.read()
+            val staged = pending.filter { it.id in ids }
             if (staged.isNotEmpty()) learning.record(staged.map { it.copy(quando = System.currentTimeMillis()) })
+            store.write(pending.filter { it.id !in ids })
             analyzedPhotos = analyzedPhotos.filter { it.meta.id !in ids }
+            mutable.update { current -> current.copy(photos = current.photos.filter { it.meta.id !in ids },
+                selected = current.selected - ids.toSet()) }
         } catch (_: Exception) { message("Foto apagada; não foi possível salvar este exemplo de aprendizado.") }
+    }
+
+    fun moveGoogleBatch(ids: List<Long>) {
+        if (ids.isEmpty() || movingGoogleBatch) return
+        movingGoogleBatch = true
+        mutable.update { it.copy(learning = true, message = "Movendo fotos para Apagar - Limpar Fotos…") }
+        viewModelScope.launch {
+            try {
+                val moved = withContext(Dispatchers.IO) {
+                    val resolver = getApplication<Application>().contentResolver
+                    val values = ContentValues().apply {
+                        put(MediaStore.Images.Media.RELATIVE_PATH, PhotoRules.BATCH_FOLDER)
+                    }
+                    val successful = mutableListOf<Long>()
+                    for (id in ids) {
+                        try {
+                            if (resolver.update(photoUri(id), values, null, null) > 0) successful.add(id)
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { /* Uma falha não interrompe as outras fotos. */ }
+                    }
+                    successful.toSet()
+                }
+                // Só a movimentação foi autorizada: os exemplos continuam pendentes até a exclusão real.
+                val result = googleBatchResult(ids.size, moved.size)
+                analyzedPhotos = analyzedPhotos.filter { it.meta.id !in moved }
+                mutable.update { current -> current.copy(
+                    photos = current.photos.filter { it.meta.id !in moved }, selected = current.selected - moved,
+                    googleBatchResult = result,
+                    message = "Fotos movidas: ${result.moved}; falhas: ${result.failed}. Conclua no Google Fotos.") }
+            } finally {
+                movingGoogleBatch = false
+                mutable.update { it.copy(learning = false) }
+            }
+        }
+    }
+
+    fun dismissGoogleBatchResult() { mutable.update { it.copy(googleBatchResult = null) } }
+
+    suspend fun checkStagedDeletions() {
+        try {
+            val confirmed = withContext(Dispatchers.IO) {
+                val pending = try { DeletionTrainingStore(getApplication()).read() }
+                    catch (_: java.io.FileNotFoundException) { emptyList() }
+                pending.filter { mediaPresence(it.id) == MediaPresence.MISSING }.map { it.id }
+            }
+            confirmedDeletion(confirmed)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { message("Não foi possível conferir a lixeira e salvar os exemplos. Tente novamente.") }
     }
 
     fun localTrashResult(accepted: Boolean) {
@@ -383,10 +441,7 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
         mutable.update { it.copy(learning = true) }
         viewModelScope.launch {
             try {
-                val confirmed = withContext(Dispatchers.IO) {
-                    DeletionTrainingStore(getApplication()).read().filter { mediaPresence(it.id) == MediaPresence.MISSING }.map { it.id }
-                }
-                confirmedDeletion(confirmed)
+                checkStagedDeletions()
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
                 message("Não foi possível conferir a lixeira e salvar os exemplos. Tente novamente.")
@@ -409,4 +464,14 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
                 } ?: MediaPresence.UNKNOWN
         }
     } catch (_: Exception) { MediaPresence.UNKNOWN }
+}
+
+data class GoogleBatchResult(val moved: Int, val failed: Int)
+
+internal fun googleBatchResult(requested: Int, moved: Int) = GoogleBatchResult(moved, requested - moved)
+
+internal fun googleBatchMessage(result: GoogleBatchResult): String = buildString {
+    append("${result.moved} fotos foram para a pasta 'Apagar - Limpar Fotos'.")
+    if (result.failed > 0) append(" Falhas ao mover: ${result.failed}. As fotos que falharam continuam disponíveis para tentar novamente.")
+    append("\n\nNo Google Fotos: Biblioteca → Fotos no dispositivo → Apagar - Limpar Fotos → toque e segure a 1ª e arraste até a última (ou toque no ✓ de cada data) → Lixeira → Mover para a lixeira. Isso apaga do celular e da nuvem.")
 }
