@@ -7,6 +7,13 @@ import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import androidx.work.await
+import androidx.work.workDataOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
@@ -14,8 +21,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 
 data class CleanState(
     val photos: List<Photo> = emptyList(),
@@ -37,7 +46,48 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
             it.getInt("skipped"), it.getBoolean("awaiting"), it.getBoolean("decision")) }))
     val state = mutable.asStateFlow()
     private var scanJob: Job? = null
+    private var enqueueJob: Job? = null
     private var deletionSummary: String? = null
+    private val workManager = WorkManager.getInstance(application)
+    private var workObserved = false
+    private var workerActive = false
+    private var pendingCacheRefresh = false
+    private var workerOutput = Data.EMPTY
+    private var workerFailure: String? = null
+
+    init {
+        viewModelScope.launch {
+            var handledTerminal: java.util.UUID? = null
+            workManager.getWorkInfosForUniqueWorkFlow(ScanWorker.NAME).collect { infos ->
+                val work = infos.firstOrNull { !it.state.isFinished } ?: infos.firstOrNull()
+                workObserved = true
+                workerActive = work != null && !work.state.isFinished
+                if (workerActive && work != null) {
+                    scanJob?.cancelAndJoin()
+                    val p = work.progress
+                    mutable.update { it.copy(scanning = true,
+                        progress = if (p.keyValueMap.containsKey("done")) ScanProgress(
+                            p.getInt("done", 0), p.getInt("total", 0),
+                            p.getInt("batchDone", 0), p.getInt("batchSize", 0)) else null,
+                        message = "Lendo a galeria…") }
+                } else if (work != null && work.state.isFinished && handledTerminal != work.id) {
+                    handledTerminal = work.id
+                    workerOutput = work.outputData
+                    workerFailure = when (work.state) {
+                        WorkInfo.State.FAILED -> workerOutput.getString("error") ?: "Falha na análise."
+                        WorkInfo.State.CANCELLED -> "Análise interrompida; o que já foi analisado ficou salvo."
+                        else -> null
+                    }
+                    scanJob?.cancelAndJoin()
+                    mutable.update { it.copy(scanning = false) }
+                    if (MediaAccess.mode(application) > 0) scan(analyzeMore = false)
+                } else if (!workerActive && pendingCacheRefresh) {
+                    scan(analyzeMore = false)
+                }
+                pendingCacheRefresh = false
+            }
+        }
+    }
 
     fun setBatchLimit(limit: Int) {
         require(limit > 0)
@@ -46,12 +96,39 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
     }
 
     fun scan(analyzeMore: Boolean = true) {
-        if (scanJob?.isActive == true || mutable.value.googleFlow != null) return
-        val limit = if (analyzeMore) mutable.value.batchLimit else 0
+        if (mutable.value.googleFlow != null || workerActive) return
+        if (analyzeMore) {
+            workerOutput = Data.EMPTY
+            workerFailure = null
+            val request = OneTimeWorkRequestBuilder<ScanWorker>()
+                .setInputData(workDataOf("limit" to mutable.value.batchLimit)).build()
+            workerActive = true
+            mutable.update { it.copy(scanning = true, progress = null, message = "Lendo a galeria…") }
+            enqueueJob = viewModelScope.launch {
+                scanJob?.cancelAndJoin()
+                mutable.update { it.copy(scanning = true, progress = null, message = "Lendo a galeria…") }
+                try {
+                    workManager.enqueueUniqueWork(ScanWorker.NAME, ExistingWorkPolicy.KEEP, request).await()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    workerActive = false
+                    mutable.update { it.copy(scanning = false, message = "Não foi possível iniciar a análise. Tente novamente.") }
+                }
+            }
+            return
+        }
+        if (scanJob?.isActive == true) return
+        // onResume can precede the first WorkManager emission; avoid writing beside a running worker.
+        if (!workObserved) { pendingCacheRefresh = true; return }
         scanJob = viewModelScope.launch {
             mutable.update { it.copy(scanning = true, progress = null, message = "Lendo a galeria…") }
             try {
-                val result = PhotoScanner(getApplication()).scan(limit) { progress -> mutable.update { it.copy(progress = progress) } }
+                val result = ScanWorker.scanMutex.withLock {
+                    PhotoScanner(getApplication()).scan(0) { progress -> mutable.update { it.copy(progress = progress) } }
+                }.let { it.copy(unreadable = maxOf(it.unreadable, workerOutput.getInt("unreadable", 0)),
+                    cacheWarning = it.cacheWarning || workerOutput.getBoolean("cacheWarning", false),
+                    report = it.report.ifBlank { workerOutput.getString("report").orEmpty() }) }
                 // Só aparecem as fotos que o app sugere apagar; o Artur desmarca o que quer manter.
                 val suggestions = PhotoRules.filterKept(result.photos, KeptPhotoStore(getApplication()).read())
                     .filter(PhotoRules::initiallySelected)
@@ -64,10 +141,12 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
                         }.map { it.meta.id }.toSet(),
                         scanning = false, scanned = true, progress = result.progress,
                         message = buildString {
-                            if (result.progress.done == result.progress.total) append("Análise concluída.")
+                            if (workerFailure != null) append(workerFailure)
+                            else if (result.progress.done == result.progress.total) append("Análise concluída.")
                             else append("Continue com o próximo lote quando quiser.")
                             if (result.unreadable > 0) append(" ${result.unreadable} falharam; tente analisar mais novamente.")
                             if (result.cacheWarning) append(" Não foi possível salvar parte do cache.")
+                            if (result.report.isNotBlank()) append(" ${result.report}")
                             deletionSummary?.let { append(" $it") }
                         })
                 }
@@ -85,9 +164,12 @@ class CleanViewModel(application: Application, private val savedState: SavedStat
 
     /** Para no meio do lote: o que já foi analisado fica no cache e aparece na tela. */
     fun stop() {
-        val job = scanJob ?: return
         viewModelScope.launch {
-            job.cancelAndJoin()
+            enqueueJob?.cancelAndJoin()
+            workManager.cancelUniqueWork(ScanWorker.NAME).await()
+            scanJob?.cancelAndJoin()
+            workerActive = false
+            mutable.update { it.copy(scanning = false) }
             scan(analyzeMore = false)
         }
     }

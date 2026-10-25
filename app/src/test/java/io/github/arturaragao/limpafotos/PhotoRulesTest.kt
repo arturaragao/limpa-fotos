@@ -222,11 +222,11 @@ class PhotoRulesTest {
         }
     }
 
-    @Test fun personLabelsAreCaseInsensitiveAndProtectAtLowConfidence() {
+    @Test fun personLabelsAreCaseInsensitiveAndNeedClearConfidence() {
         for (label in listOf("Selfie", "Person", "FACE", "Portrait", "People", "Baby", "Crowd")) {
-            assertTrue(PhotoRules.hasPersonLabel(listOf(label to 0.4f)))
+            assertTrue(PhotoRules.hasPersonLabel(listOf(label to 0.6f)))
         }
-        assertFalse(PhotoRules.hasPersonLabel(listOf("Person" to 0.399f)))
+        assertFalse(PhotoRules.hasPersonLabel(listOf("Person" to 0.599f)))
         assertFalse(PhotoRules.hasPersonLabel(listOf("Landscape" to 0.99f)))
         assertFalse(PhotoRules.hasPersonLabel(listOf("Person" to Float.NaN)))
     }
@@ -321,5 +321,39 @@ class PhotoRulesTest {
         assertEquals("0,0 MB", PhotoRules.formatMb(-10))
         assertEquals("1,0 MB", PhotoRules.formatMb(1_000_000))
         assertEquals("12,3 MB", PhotoRules.formatMb(12_345_678))
+    }
+
+    // Regressão 24/10/2026: 400 fotos, zero sugestões. Mão/pele/cabelo e avatares em prints excluíam quase tudo.
+    @Test fun bodyPartLabelsNoLongerHidePhotos() {
+        for (label in listOf("Hand", "Skin", "Hair", "Smile", "Arm", "Leg", "Beard"))
+            assertFalse(PhotoRules.hasPersonLabel(listOf(label to 0.95f)))
+    }
+
+    @Test fun printsIgnoreSmallFacesButCameraPhotosDoNot() {
+        val print = meta(path = "Pictures/Screenshots/", name = "Screenshot_1.png")
+        val camera = meta()
+        assertFalse(PhotoRules.faceExcludes(print, 0f))
+        assertFalse(PhotoRules.faceExcludes(print, 0.04f))
+        assertTrue(PhotoRules.faceExcludes(print, 0.2f))
+        assertFalse(PhotoRules.faceExcludes(camera, 0f))
+        assertTrue(PhotoRules.faceExcludes(camera, 0.01f))
+    }
+
+    @Test fun oldCacheRedoesOnlyWhatOldPersonRulesMayHaveHidden() {
+        val print = meta(path = "Pictures/Screenshots/", name = "Screenshot_1.png")
+        val camera = meta()
+        val face = Analysis(0, Double.NaN, hasFace = true)
+        assertTrue(PhotoRules.staleV3(print, face))
+        assertFalse(PhotoRules.staleV3(camera, face))
+        assertTrue(PhotoRules.staleV3(camera, Analysis(1, 50.0, person = true)))
+        assertFalse(PhotoRules.staleV3(camera, Analysis(1, 50.0)))
+    }
+
+    @Test fun reportExplainsWhyNothingWasSuggested() {
+        val analyzed = listOf(Photo(meta(1), Analysis(0, Double.NaN, hasFace = true), emptySet()),
+            Photo(meta(2, path = "Pictures/Screenshots/", name = "Screenshot_2.png"), Analysis(5, 50.0), emptySet()))
+        val text = PhotoRules.report(analyzed, PhotoRules.classify(analyzed), emptySet())
+        assertTrue(text, text.startsWith("2 analisadas: 1 sugeridas (prints 1)"))
+        assertTrue(text, "1 com pessoas" in text)
     }
 }

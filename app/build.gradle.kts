@@ -14,8 +14,8 @@ android {
         applicationId = "io.github.arturaragao.limpafotos"
         minSdk = 30
         targetSdk = 35
-        versionCode = providers.gradleProperty("versionCode").orElse("2").get().toInt()
-        versionName = providers.gradleProperty("versionName").orElse("0.1.2").get()
+        versionCode = providers.gradleProperty("versionCode").orElse("3").get().toInt()
+        versionName = providers.gradleProperty("versionName").orElse("0.1.3").get()
         // Só processadores de celular: as libs x86 do ML Kit somavam 44 MB e faziam o download da atualização cair.
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }

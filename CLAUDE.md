@@ -1,4 +1,4 @@
-# Limpa Fotos
+# Limpar Fotos
 
 ## O que é
 
@@ -21,8 +21,11 @@ público `arturaragao/limpa-fotos`. Kotlin, applicationId
   independente do cache; ReviewSessionStore guarda a fila da prévia sem limite do
   Binder. Nenhum arquivo contém fotografias. Favoritos sempre vêm da consulta
   atual, e falhas de análise são tentadas de novo na próxima varredura.
-- `CleanViewModel.kt`: coroutine de varredura fora da UI e StateFlow; sobrevive
-  à rotação. Seleção global por id, mantidas persistentes e fila Google Fotos
+- `ScanWorker.kt`: análise em segundo plano via WorkManager, trabalho único `scan`
+  com KEEP e serviço em primeiro plano dataSync, notificação de progresso e resultado.
+  Cache por foto permite retomar após interrupção; negar notificações não impede análise.
+- `CleanViewModel.kt`: observa o worker e reconecta o progresso ao reabrir; leitura
+  só do cache em coroutine local. Seleção global por id, mantidas persistentes e fila Google Fotos
   restaurável via SavedStateHandle. Confere MediaStore fora da UI ao retornar;
   ausência com acesso completo ou IS_TRASHED confirma exclusão local. Falha de
   consulta ou ausência sob acesso parcial pede decisão, sem contar exclusão.
@@ -65,7 +68,11 @@ público `arturaragao/limpa-fotos`. Kotlin, applicationId
 
 ## Estado atual
 
-Versão padrão 0.1.2 / code 2. Mantidas persistentes desaparecem de todas as
+Versão padrão 0.1.3 / code 3. Nome visível: Limpar Fotos. Análise em segundo plano
+com WorkManager em primeiro plano (notificação), reconexão do progresso e cancelamento
+com recarga do cache. Permissão de notificações pedida antes da primeira análise no
+Android 13+; negar não bloqueia. Relatório e avisos do worker preservados no resumo.
+Mantidas persistentes desaparecem de todas as
 categorias e lotes; Configurações → Mostrar de novo as que mantive limpa a lista.
 Analisar mais já pulava o cache válido e continua assim, com novos testes.
 Categorias: prints, documentos/papel (rótulo >= 0,90), figurinhas (WebP pequeno
@@ -100,6 +107,13 @@ eventuais mudanças nos hosts de download do GitHub.
 
 ## Histórico
 
+- 24/10/2026: 0.1.3 / code 3; nome Limpar Fotos, análise em segundo plano com
+  WorkManager em primeiro plano (notificação dataSync), progresso reconectável,
+  cancelamento e recarga do cache, permissão de notificações antes de analisar.
+  Relatório, falhas de leitura e aviso de cache passam pelo outputData do worker.
+  Revisão estática e diff --check feitos; compilação local bloqueada pelo wrapper JAR
+  ausente. Validar reabertura, cancelamento e permissão negada no aparelho.
+  Sem alterações em PhotoRules.kt/PhotoScanner.kt, dependências, commit ou push.
 - 24/10/2026: 0.1.2 / code 2; mantidas persistentes e reset, testes de lotes,
   tela cheia com zoom/navegação/seleção, filtros conservadores e remoção de comida,
   face-detection embarcado autorizado, cache v3 e fluxo Google Fotos com progresso,

@@ -71,12 +71,44 @@ object PhotoRules {
         if (stickerWebp || path.contains("whatsapp stickers")) add(Category.STICKERS)
     }
 
+    // Só rótulos que indicam gente de fato. Partes do corpo (mão, cabelo, pele, sorriso…) saíram: uma mão
+    // segurando um papel ou um print com avatar excluía quase tudo e o app não sugeria nada.
     private val PERSON_LABELS = setOf("person", "people", "selfie", "face", "portrait", "human",
-        "baby", "child", "boy", "girl", "man", "woman", "bride", "groom", "crowd",
-        "human body", "skin", "hair", "hand", "arm", "leg", "facial hair", "beard", "smile")
+        "baby", "child", "boy", "girl", "man", "woman", "bride", "groom", "crowd")
+    const val PERSON_LABEL_MIN = 0.6f
+    /** Num print, só rosto grande (foto de gente printada) exclui; avatares e miniaturas não. */
+    const val PRINT_FACE_MIN = 0.2f
+
     fun hasPersonLabel(labels: List<Pair<String, Float>>): Boolean = labels.any {
-        it.first.lowercase(Locale.ROOT) in PERSON_LABELS && it.second >= 0.4f
+        it.first.lowercase(Locale.ROOT) in PERSON_LABELS && it.second >= PERSON_LABEL_MIN
     }
+    fun isScreenLike(meta: PhotoMeta): Boolean = metadataCategories(meta).isNotEmpty()
+    /** largestFace = largura do maior rosto / largura da imagem (0 = nenhum rosto). */
+    fun faceExcludes(meta: PhotoMeta, largestFace: Float): Boolean =
+        if (isScreenLike(meta)) largestFace >= PRINT_FACE_MIN else largestFace > 0f
+    /** Cache antigo (v3) usava regras de pessoa amplas demais: refaz só o que pode ter mudado. */
+    fun staleV3(meta: PhotoMeta, analysis: Analysis): Boolean =
+        analysis.person || (analysis.hasFace && isScreenLike(meta))
+
+    /** Resumo do que a análise encontrou, para nunca ficar "nenhuma sugestão" sem explicação. */
+    fun report(analyzed: List<Photo>, classified: List<Photo>, keptIds: Set<Long>): String {
+        val people = analyzed.count { excludedByPerson(it.analysis) }
+        val cat = analyzed.count { !excludedByPerson(it.analysis) && it.analysis?.cat == true }
+        val kept = analyzed.count { it.meta.id in keptIds }
+        val suggested = classified.filter(::initiallySelected)
+        val perCategory = Category.values().mapNotNull { c ->
+            suggested.count { c in it.categories }.takeIf { it > 0 }?.let { "${c.title.lowercase(Locale.ROOT)} $it" }
+        }
+        return buildString {
+            append("${analyzed.size} analisadas: ${suggested.size} sugeridas")
+            if (perCategory.isNotEmpty()) append(" (${perCategory.joinToString(", ")})")
+            append("; $people com pessoas (puladas)")
+            if (cat > 0) append("; $cat do Koda")
+            if (kept > 0) append("; $kept mantidas por você")
+            append(".")
+        }
+    }
+
     fun hasDocumentLabel(labels: List<Pair<String, Float>>): Boolean = labels.any {
         it.first.lowercase(Locale.ROOT) in setOf("document", "paper", "receipt") && it.second >= 0.9f
     }

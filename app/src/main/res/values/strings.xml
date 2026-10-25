@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Limpa Fotos</string>
+    <string name="app_name">Limpar Fotos</string>
     <string name="settings">Configurações</string>
     <string name="analysis_limit">Analisar até N fotos</string>
     <string name="batch_explanation">Por lote, apenas as fotos mais recentes ainda não analisadas. Os resultados anteriores ficam salvos neste aparelho.</string>
@@ -15,6 +15,6 @@
     <string name="app_version">Versão %1$s</string>
     <string name="save">Salvar</string>
     <string name="invalid_limit">Informe um número inteiro maior que zero.</string>
-    <string name="widget_name">Limpar fotos</string>
-    <string name="widget_description">Abra o Limpa Fotos para revisar e limpar sua galeria.</string>
+    <string name="widget_name">Limpar Fotos</string>
+    <string name="widget_description">Abra o Limpar Fotos para revisar e limpar sua galeria.</string>
 </resources>

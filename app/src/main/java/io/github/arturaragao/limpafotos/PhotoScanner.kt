@@ -57,7 +57,7 @@ fun photoUri(id: Long): Uri = ContentUris.withAppendedId(MediaStore.Images.Media
 /** done/total = galeria acessível sem mantidas; batchDone/batchSize = lote desta rodada. */
 data class ScanProgress(val done: Int, val total: Int, val batchDone: Int = 0, val batchSize: Int = 0)
 data class ScanResult(val photos: List<Photo>, val unreadable: Int, val cacheWarning: Boolean,
-    val progress: ScanProgress)
+    val progress: ScanProgress, val report: String = "")
 
 class PhotoScanner(private val context: Context) {
     /** Images only, including GIF/WebP. No bytes are read by the monthly worker. */
@@ -88,7 +88,13 @@ class PhotoScanner(private val context: Context) {
         val keptIds = KeptPhotoStore(context).read()
         val eligible = all.filter { it.id !in keptIds }
         val cache = AnalysisCache(context)
-        val stored = cache.read()
+        val metaByKey = all.associateBy(PhotoRules::analysisKey)
+        val (version, raw) = cache.read()
+        // v3 → v4: análises que as regras antigas de pessoa podem ter excluído errado são refeitas.
+        val stored = if (version == 4) raw else raw.filter { (key, a) ->
+            val meta = metaByKey[key]
+            meta == null || !PhotoRules.staleV3(meta, a)
+        }
         val validKeys = all.map(PhotoRules::analysisKey).toHashSet()
         val completed = stored.filterKeys { it in validKeys }.toMutableMap()
         // Partial access hides media without deleting it: retain its cached analyses.
@@ -126,8 +132,9 @@ class PhotoScanner(private val context: Context) {
             val photos = all.mapNotNull { meta ->
                 completed[PhotoRules.analysisKey(meta)]?.let { Photo(meta, it, emptySet()) }
             }
-            ScanResult(PhotoRules.classify(photos, keptIds), unreadable, cacheWarning,
-                ScanProgress(completedCount(), eligible.size))
+            val classified = PhotoRules.classify(photos, keptIds)
+            ScanResult(classified, unreadable, cacheWarning,
+                ScanProgress(completedCount(), eligible.size), PhotoRules.report(photos, classified, keptIds))
         } finally {
             try { try { labeler?.close() } finally { detector?.close() } } finally {
                 cacheWarning = !cache.write(hidden + completed) || cacheWarning
@@ -144,13 +151,14 @@ class PhotoScanner(private val context: Context) {
                 (info.size.height * scale.coerceAtMost(1.0)).roundToInt().coerceAtLeast(1))
         }
         try {
-            val hasFace = suspendCoroutine<Boolean> { continuation ->
+            val largestFace = suspendCoroutine<Float> { continuation ->
                 detector.process(InputImage.fromBitmap(bitmap, 0))
-                    .addOnSuccessListener { continuation.resume(it.isNotEmpty()) }
+                    .addOnSuccessListener { faces -> continuation.resume(
+                        faces.maxOfOrNull { it.boundingBox.width().toFloat() / bitmap.width } ?: 0f) }
                     .addOnFailureListener { continuation.resumeWithException(it) }
             }
-            // A face alone excludes every category, including duplicates. No further ML needed.
-            if (hasFace) return Analysis(0, Double.NaN, hasFace = true)
+            // A face excludes every category, including duplicates. In prints only a large face counts.
+            if (PhotoRules.faceExcludes(meta, largestFace)) return Analysis(0, Double.NaN, hasFace = true)
             val scale = (256.0 / max(bitmap.width, bitmap.height)).coerceAtMost(1.0)
             val preview = Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).roundToInt().coerceAtLeast(1),
                 (bitmap.height * scale).roundToInt().coerceAtLeast(1), true)
@@ -171,7 +179,9 @@ class PhotoScanner(private val context: Context) {
             }
             // Limiar baixo para gato: melhor deixar uma foto ruim do Koda do que sugerir apagar uma boa.
             val cat = labels.any { it.first == "cat" && it.second >= 0.5f }
-            return Analysis(hash, variance, cat = cat, person = PhotoRules.hasPersonLabel(labels),
+            // Print/figurinha: rótulo de pessoa não exclui (só rosto grande, acima).
+            val person = !PhotoRules.isScreenLike(meta) && PhotoRules.hasPersonLabel(labels)
+            return Analysis(hash, variance, cat = cat, person = person,
                 document = PhotoRules.hasDocumentLabel(labels), whatsappJunk = PhotoRules.hasJunkLabel(labels))
         } finally {
             bitmap.recycle()
@@ -191,11 +201,12 @@ class PhotoScanner(private val context: Context) {
 
 /** Versioned, atomic JSON in filesDir. Only id/date, hash, score and boolean; never image data. */
 private class AnalysisCache(context: Context) {
-    // v2 has no face result: never reuse it for suggestions.
+    // v2 has no face result: never reuse it. v3 is filtered by PhotoRules.staleV3 and rewritten as v4.
     private val file = AtomicFile(File(context.filesDir, "analysis-v3.json"))
-    fun read(): Map<String, Analysis> = try {
+    fun read(): Pair<Int, Map<String, Analysis>> = try {
         val json = JSONObject(file.openRead().bufferedReader(Charsets.UTF_8).use { it.readText() })
-        if (json.optInt("version") != 3) emptyMap() else buildMap {
+        val version = json.optInt("version")
+        version to if (version != 3 && version != 4) emptyMap() else buildMap {
             val entries = json.getJSONArray("entries")
             for (i in 0 until entries.length()) {
                 val e = entries.getJSONObject(i)
@@ -205,7 +216,7 @@ private class AnalysisCache(context: Context) {
                     document = e.getBoolean("document"), whatsappJunk = e.getBoolean("whatsappJunk")))
             }
         }
-    } catch (_: Exception) { emptyMap() }
+    } catch (_: Exception) { 0 to emptyMap() }
 
     fun write(entries: Map<String, Analysis>): Boolean {
         var stream: java.io.FileOutputStream? = null
@@ -215,7 +226,7 @@ private class AnalysisCache(context: Context) {
                 .put("sharpness", if (a.sharpness.isFinite()) a.sharpness else JSONObject.NULL)
                 .put("cat", a.cat).put("hasFace", a.hasFace).put("person", a.person)
                 .put("document", a.document).put("whatsappJunk", a.whatsappJunk)) }
-            val bytes = JSONObject().put("version", 3).put("entries", list).toString().toByteArray(Charsets.UTF_8)
+            val bytes = JSONObject().put("version", 4).put("entries", list).toString().toByteArray(Charsets.UTF_8)
             stream = file.startWrite()
             stream.write(bytes)
             file.finishWrite(stream)

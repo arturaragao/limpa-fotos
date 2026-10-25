@@ -59,7 +59,7 @@ class MonthlyWorker(context: Context, parameters: WorkerParameters) : Worker(con
             if (candidates.isNotEmpty()) {
                 val text = "Você tem ${candidates.size} prints e figurinhas (${PhotoRules.formatMb(candidates.sumOf { it.bytes })}). Limpar?"
                 manager.notify(901, Notification.Builder(applicationContext, "limpeza")
-                    .setSmallIcon(R.drawable.ic_logo).setContentTitle("Limpa Fotos").setContentText(text)
+                    .setSmallIcon(R.drawable.ic_logo).setContentTitle("Limpar Fotos").setContentText(text)
                     .setStyle(Notification.BigTextStyle().bigText(text))
                     .setContentIntent(Notifications.open(applicationContext, 901)).setAutoCancel(true).build())
             }

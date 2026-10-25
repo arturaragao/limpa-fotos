@@ -145,7 +145,7 @@ object Updater {
                         prefs.edit().putBoolean("installPending", true).apply()
                         activity.runOnUiThread {
                             if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
-                            Toast.makeText(activity, "Permita instalar apps desconhecidos para o Limpa Fotos e volte.", Toast.LENGTH_LONG).show()
+                            Toast.makeText(activity, "Permita instalar apps desconhecidos para o Limpar Fotos e volte.", Toast.LENGTH_LONG).show()
                             runCatching { activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + activity.packageName))) }
                                 .onFailure { reportError(context, it.message ?: "Não consegui abrir a permissão de instalação") }
                         }
@@ -210,7 +210,7 @@ object Updater {
         val file = apkFile(context)
         val archive = context.packageManager.getPackageArchiveInfo(file.absolutePath, 0)
             ?: run { file.delete(); error("APK inválido; baixo de novo na próxima vez") }
-        check(archive.packageName == context.packageName) { "APK não pertence ao Limpa Fotos" }
+        check(archive.packageName == context.packageName) { "APK não pertence ao Limpar Fotos" }
         val code = if (Build.VERSION.SDK_INT >= 28) archive.longVersionCode else archive.versionCode.toLong()
         check(code == UpdateVersion.codeFromTag(tag)?.toLong() && code > BuildConfig.VERSION_CODE) { "Versão do APK inválida" }
         val installer = context.packageManager.packageInstaller
@@ -293,7 +293,7 @@ object Updater {
         val open = Intent(context, MainActivity::class.java).putExtra(EXTRA, true)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val pending = PendingIntent.getActivity(context, NOTIF_ID, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        if (notify(context, "Atualização do Limpa Fotos", "Versão ${release.tag.removePrefix("v")} disponível. Toque para atualizar.", pending)) {
+        if (notify(context, "Atualização do Limpar Fotos", "Versão ${release.tag.removePrefix("v")} disponível. Toque para atualizar.", pending)) {
             prefs.edit().putString("notified", release.tag).apply()
         }
     }
@@ -317,7 +317,7 @@ object Updater {
 
     private fun reportError(context: Context, reason: String) {
         Log.w("LimpaFotos", "Atualização: $reason")
-        notify(context, "Falha ao atualizar Limpa Fotos", reason.take(180), openApp(context))
+        notify(context, "Falha ao atualizar Limpar Fotos", reason.take(180), openApp(context))
     }
 
     internal fun onPackageReplaced(context: Context) {
@@ -332,7 +332,7 @@ object Updater {
             .remove("sessionId").remove("sessionTag").remove("stagedTag").remove("notified").remove("confirmation")
             .putBoolean("installPending", false).putInt("failures", 0).commit()
         apkFile(context).delete()
-        notify(context, "Limpa Fotos atualizado para ${tag.removePrefix("v")}", "Toque para abrir o app.", openApp(context))
+        notify(context, "Limpar Fotos atualizado para ${tag.removePrefix("v")}", "Toque para abrir o app.", openApp(context))
     }
 
     @Suppress("DEPRECATION")
@@ -354,10 +354,10 @@ object Updater {
                 confirmation.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 prefs.edit().putString("confirmation", confirmation.toUri(Intent.URI_INTENT_SCHEME)).apply()
                 val pending = PendingIntent.getActivity(context, id, confirmation, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                notify(context, "Atualização do Limpa Fotos", "Toque para confirmar a instalação.", pending)
+                notify(context, "Atualização do Limpar Fotos", "Toque para confirmar a instalação.", pending)
                 runCatching { context.startActivity(confirmation) }.onFailure {
                     Log.w("LimpaFotos", "Confirme a instalação pela notificação", it)
-                    notify(context, "Confirme a atualização do Limpa Fotos", (it.message ?: "Toque para abrir o instalador.").take(180), pending)
+                    notify(context, "Confirme a atualização do Limpar Fotos", (it.message ?: "Toque para abrir o instalador.").take(180), pending)
                 }
             }
             PackageInstaller.STATUS_SUCCESS -> reportSuccess(context, prefs.getString("sessionTag", null) ?: BuildConfig.VERSION_NAME)

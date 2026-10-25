@@ -61,6 +61,8 @@ class MainActivity : ComponentActivity() {
     private var accessMode = -1
     private var trashPending = false
     private var checkingGoogle = false
+    private var pendingAnalysis = false
+    private val notificationPreferences by lazy { getSharedPreferences("notification_permission", MODE_PRIVATE) }
 
     private val reviewRequest = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         model.refreshReviewSelection()
@@ -78,6 +80,11 @@ class MainActivity : ComponentActivity() {
         Toast.makeText(this, if (granted) "Lembrete mensal ativado." else "Notificações desativadas pelo Android.", Toast.LENGTH_SHORT).show()
         updateReminderButton()
     }
+    private val scanNotificationRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        if (pendingAnalysis && MediaAccess.mode(this) > 0) model.scan()
+        pendingAnalysis = false
+        updateReminderButton()
+    }
     private val trashRequest = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         trashPending = false
         if (result.resultCode == Activity.RESULT_OK) {
@@ -90,6 +97,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         trashPending = savedInstanceState?.getBoolean("trashPending") ?: false
+        pendingAnalysis = savedInstanceState?.getBoolean("pendingAnalysis") ?: false
         buildScreen()
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) { model.state.collect { render(it) } }
@@ -98,6 +106,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("trashPending", trashPending)
+        outState.putBoolean("pendingAnalysis", pendingAnalysis)
         super.onSaveInstanceState(outState)
     }
 
@@ -146,7 +155,7 @@ class MainActivity : ComponentActivity() {
         setContentView(root)
         root.requestApplyInsets()
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        header.addView(text("Limpa Fotos", 28f).apply { setTypeface(typeface, Typeface.BOLD) })
+        header.addView(text("Limpar Fotos", 28f).apply { setTypeface(typeface, Typeface.BOLD) })
         header.addView(text("v${BuildConfig.VERSION_NAME}", 13f, R.color.secondary).apply { setPadding(dp(8), dp(8), 0, 0) },
             LinearLayout.LayoutParams(0, -2, 1f))
         header.addView(ImageButton(this).apply {
@@ -188,7 +197,7 @@ class MainActivity : ComponentActivity() {
             if (model.state.value.scanning) model.stop() else {
                 val value = quantity.text.toString().toIntOrNull()
                 if (value == null || value !in 1..100_000) quantity.error = getString(R.string.invalid_limit)
-                else { model.setBatchLimit(value); model.scan() }
+                else { model.setBatchLimit(value); startAnalysis() }
             }
         }.apply {
             setTextColor(getColor(R.color.on_accent))
@@ -201,6 +210,7 @@ class MainActivity : ComponentActivity() {
         root.addView(analyzeRow, LinearLayout.LayoutParams(-1, -2))
         reminder = action("Ativar lembrete mensal") {
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPreferences.edit().putBoolean("asked", true).apply()
                 notificationRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
             } else startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
         }
@@ -265,6 +275,16 @@ class MainActivity : ComponentActivity() {
         root.addView(googleActions, LinearLayout.LayoutParams(-1, -2))
         root.addView(text("Google Fotos: toque na lixeira lá e volte aqui para continuar.\nLixeira só do celular: a cópia na nuvem pode continuar lá.", 11f, R.color.secondary)
             .apply { gravity = Gravity.CENTER; setPadding(0, dp(6), 0, 0) })
+    }
+
+    private fun startAnalysis() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+            !notificationPreferences.getBoolean("asked", false)) {
+            notificationPreferences.edit().putBoolean("asked", true).apply()
+            pendingAnalysis = true
+            scanNotificationRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else model.scan()
     }
 
     private fun render(state: CleanState) {

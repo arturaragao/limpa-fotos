@@ -1,4 +1,4 @@
-# Limpa Fotos
+# Limpar Fotos
 
 App Android gratuito (Android 11+, Kotlin) para revisar prints, GIFs/figurinhas,
 fotos borradas, repetidas e comida. Tudo é analisado no aparelho; ML Kit vem
