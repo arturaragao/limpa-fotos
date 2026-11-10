@@ -69,7 +69,7 @@ público `arturaragao/limpa-fotos`. Kotlin, applicationId
 ## Pedidos do Artur
 
 - Trabalhar só neste projeto e ler apenas os arquivos indicados do modelo
-  `C:\Users\artur.aragao\Documents\banco-cbr-android`; nunca alterá-lo.
+  o clone local `banco-cbr-android`; nunca alterá-lo.
 - Não fazer commit/push. Não ler/gravar outros repositórios para esta tarefa.
 - Tudo no aparelho, sem fotos na rede, tokens, Firebase ou serviço pago.
 - Não apagar imagens diretamente; só lixeira mediante confirmação do Android.
